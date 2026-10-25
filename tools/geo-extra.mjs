@@ -3,6 +3,7 @@
 import { geo, toWorld, rdp, rdpRing, ringArea, bbox, load, log, centroid } from './geo-base.mjs';
 import { pieces } from './geo-streets.mjs';
 import { blocks, blockRaster as R, blockLabels as lab, CUT_Z } from './geo-blocks.mjs';
+import { parkCoverage } from './city/blocks.mjs';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Parks
@@ -16,56 +17,17 @@ for (const p of parksRaw) {
   const acres = parseFloat(p.acres || '0');
   parks.push({ name: p.signname || p.name311 || '', cat: p.typecategory || '', acres, rings });
 }
-// Coverage of every block by park land: scanline-fill each park ring over the block raster
-const W = R.w, H = R.h;
-const parkCells = new Float64Array(blocks.length + 1);
-// blocks don't carry their raster label: recover it from a point inside each block's lot rect or polygon
-for (const b of blocks) {
+// Coverage of every block by park land (NYC Parks properties of a quarter acre and more). Blocks are matched to the
+// raster by the label under their first lot rect or their centroid. Known gap: a non-convex block without lots whose
+// centroid lies outside it gets no park share (strips of Riverside Park & the Allen Street Malls); matching by
+// block.label instead would give them theirs, at the cost of changing js/nyc-geodata.js.
+const recoveredLabel = (b) => {
   const r = b.rects[0];
   const [cx, cz] = r ? [(r[0] + r[1]) / 2, (r[2] + r[3]) / 2] : centroid(b.poly);
   const i = Math.floor((cx - R.x0) / R.res), j = Math.floor((cz - R.z0) / R.res);
-  b._lab = i >= 0 && j >= 0 && i < W && j < H ? lab[j * W + i] : 0;
-}
-const byLab = new Map(blocks.map((b) => [b._lab, b]));
-const parkOf = new Map(); // block -> { name, cells }
-for (const pk of parks) {
-  if (pk.acres < 0.25) continue;
-  for (const ring of pk.rings) {
-    const bb = bbox(ring);
-    const j0 = Math.max(0, Math.floor((bb.z0 - R.z0) / R.res)), j1 = Math.min(H - 1, Math.ceil((bb.z1 - R.z0) / R.res));
-    const counts = new Map();
-    const xs = [];
-    for (let j = j0; j <= j1; j++) {
-      const z = R.z0 + (j + 0.5) * R.res;
-      xs.length = 0;
-      for (let a = 0, k = ring.length - 1; a < ring.length; k = a++) {
-        const [xa, za] = ring[k], [xb, zb] = ring[a];
-        if ((za > z) !== (zb > z)) xs.push(xa + ((z - za) * (xb - xa)) / (zb - za));
-      }
-      xs.sort((p, q) => p - q);
-      for (let n = 0; n + 1 < xs.length; n += 2) {
-        const i0 = Math.max(0, Math.ceil((xs[n] - R.x0) / R.res - 0.5)), i1 = Math.min(W - 1, Math.floor((xs[n + 1] - R.x0) / R.res - 0.5));
-        for (let i = i0; i <= i1; i++) {
-          const L = lab[j * W + i];
-          if (L) counts.set(L, (counts.get(L) || 0) + 1);
-        }
-      }
-    }
-    for (const [L, n] of counts) {
-      const b = byLab.get(L);
-      if (!b) continue;
-      b.parkCells = (b.parkCells || 0) + n;
-      const prev = parkOf.get(b);
-      if (!prev || n > prev.cells) parkOf.set(b, { name: pk.name, cells: n });
-    }
-  }
-}
-for (const b of blocks) {
-  b.park = b.parkCells ? Math.min(1, Math.round((b.parkCells / b.area) * 100) / 100) : 0;
-  const po = parkOf.get(b);
-  if (po && b.park > 0.25) b.parkName = po.name;
-  delete b.parkCells;
-}
+  return i >= 0 && j >= 0 && i < R.w && j < R.h ? lab[j * R.w + i] : 0;
+};
+parkCoverage(blocks, R, lab, parks.filter((pk) => !(pk.acres < 0.25)), recoveredLabel);
 // Hudson River Park (a state / city trust, not a NYC Parks property): the land between Route 9A (12th Ave / West St)
 // and the Hudson from 59th St down to Chambers St (Battery Park City below is built up)
 {

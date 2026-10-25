@@ -7,6 +7,7 @@ import { pieces, STREETS, AVENUES } from './geo-streets.mjs';
 import { blocks, innerRing, roads, PLAZAS, CUT_Z, STRIP, SIDEWALK } from './geo-blocks.mjs';
 import { parkShapes, piers, bridges, nj, islands, manhattanSouth, manhattanNorth } from './geo-extra.mjs';
 import { buildRoadGraph } from './geo-roadgraph.mjs';
+import { elemRing as osmElemRing, elemRings as osmElemRings } from './city/osm.mjs';
 
 const OUT = process.argv[2] || fileURLToPath(new URL('../js/nyc-geodata.js', import.meta.url));
 const q = (v) => Math.round(v * 10) / 10;
@@ -91,30 +92,9 @@ cp.outline = flat(rdpRing(cpPark.rings.reduce((a, r) => (Math.abs(ringArea(r)) >
 const WATER_NAMES = new Set(['Jacqueline Kennedy Onassis Reservoir', 'The Lake', 'The Pond', 'Harlem Meer', 'Turtle Pond', 'Conservatory Water', 'The Pool']);
 const LAWN_NAMES = new Set(['Sheep Meadow', 'The Great Lawn', 'North Meadow', 'Great Hill', 'Heckscher Ballfields', 'East Meadow', 'Cedar Hill', 'Pilgrim Hill', 'The Dene', 'Conservatory Garden', 'Strawberry Fields']);
 const SITE_NAMES = ['Bethesda Fountain', 'Bow Bridge', 'Belvedere Castle', 'Gapstow Bridge', "Cleopatra's Needle", 'Central Park Carousel', 'The Dairy (Visitor Center and Gift Shop)', 'Delacorte Theater', 'Kerbs Boathouse', 'The Arsenal', 'Central Park Zoo', 'Columbus Circle', 'Pulitzer Fountain', 'Charles A. Dana Discovery Center', 'Loeb Boathouse', 'Wollman Rink', 'Bethesda Terrace'];
-function elemRing(e) {
-  if (e.type === 'way') return (e.geometry || []).map((g) => toWorld(g.lon, g.lat));
-  let best = [];
-  for (const m of e.members || []) if (m.role === 'outer' && m.geometry && m.geometry.length > best.length) best = m.geometry.map((g) => toWorld(g.lon, g.lat));
-  return best;
-}
-function elemRings(e) {
-  // relations (The Lake, Turtle Pond, Harlem Meer) come as several outer ways: chain them into closed rings
-  if (e.type === 'way') return [(e.geometry || []).map((g) => toWorld(g.lon, g.lat))];
-  const parts = (e.members || []).filter((m) => m.role === 'outer' && m.geometry).map((m) => m.geometry.map((g) => toWorld(g.lon, g.lat)));
-  const rings = [];
-  const close = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.5;
-  while (parts.length) {
-    let ring = parts.shift();
-    for (let guard = 0; guard < 500 && !close(ring[0], ring[ring.length - 1]); guard++) {
-      const i = parts.findIndex((p) => close(p[0], ring[ring.length - 1]) || close(p[p.length - 1], ring[ring.length - 1]));
-      if (i < 0) break;
-      const p = parts.splice(i, 1)[0];
-      ring = ring.concat(close(p[0], ring[ring.length - 1]) ? p.slice(1) : p.reverse().slice(1));
-    }
-    rings.push(ring);
-  }
-  return rings;
-}
+const elemRing = (e) => osmElemRing(e, toWorld);
+// relations (The Lake, Turtle Pond, Harlem Meer) come as several outer ways: chain them into closed rings
+const elemRings = (e) => osmElemRings(e, toWorld);
 const seenSites = new Set();
 for (const e of osmCP.elements) {
   const t = e.tags || {};

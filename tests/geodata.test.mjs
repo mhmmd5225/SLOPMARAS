@@ -15,6 +15,7 @@ test('geodata builds with default paths in a checkout containing spaces and non-
     for (const name of fs.readdirSync(path.join(root, 'tools'))) {
       if (name.endsWith('.mjs')) fs.copyFileSync(path.join(root, 'tools', name), path.join(dir, 'tools', name));
     }
+    fs.cpSync(path.join(root, 'tools/city'), path.join(dir, 'tools/city'), { recursive: true });
     fs.symlinkSync(path.join(root, 'tools/data'), path.join(dir, 'tools/data'), 'dir');
     const env = { ...process.env };
     delete env.GEO_DATA;
