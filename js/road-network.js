@@ -5,9 +5,10 @@ import {
   STREETS,
   ISLAND_BOUNDS,
   getIslandBoundsAtZ,
-  BLOCKS
+  BLOCKS,
+  CITY
 } from './city-config.js';
-import { GEO } from './nyc-geodata.js';
+import { GEO } from './geodata.js';
 
 // js/road-network.js
 // Drivable road graph derived from the ground layout that city-grid.js actually builds: avenue corridors
@@ -24,6 +25,8 @@ const Z_MAX = Math.ceil(ISLAND_BOUNDS.maxZ) + 20;
 const LANE_CLEAR = 1.2; // half width each lane keeps free of obstacles
 const CROSSWALK = 2.5; // depth between an intersection box and its stop lines
 const SHORE_MARGIN = 6;
+// A city built from OpenStreetMap: curving streets followed within a metre (4b) and U-turns at dead ends (6.)
+const OPEN_CITY = CITY.open;
 
 function buildRoadNetwork(sidewalks, obstacles) {
   // 1. Spatial hash of ground footprints: curbs bound the roads, everything else also blocks pedestrians
@@ -39,7 +42,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
       }
     }
   }
-  for (const r of sidewalks) insert({ minX: r.minX, maxX: r.maxX, minZ: r.minZ, maxZ: r.maxZ, curb: true });
+  for (const r of sidewalks) insert({ minX: r.minX, maxX: r.maxX, minZ: r.minZ, maxZ: r.maxZ, curb: true, poly: r.poly });
   for (const r of obstacles) insert(r);
 
   // Calls fn(rect) for every footprint overlapping the box until fn returns true
@@ -66,7 +69,9 @@ function buildRoadNetwork(sidewalks, obstacles) {
 
   const blocked = (minX, maxX, minZ, maxZ) => !onLand(minX, maxX, minZ, maxZ) || query(minX, maxX, minZ, maxZ, () => true);
   const walkable = (minX, maxX, minZ, maxZ) => onLand(minX, maxX, minZ, maxZ) && !query(minX, maxX, minZ, maxZ, (r) => !r.curb);
-  const onSidewalk = (x, z) => query(x, x, z, z, (r) => r.curb);
+  // a curb given by its outline (an irregular block of a city built from OpenStreetMap) holds just the points inside it
+  const curbAt = (r, x, z) => r.curb && (!r.poly || insidePoly(r.poly, x, z));
+  const onSidewalk = (x, z) => query(x, x, z, z, (r) => curbAt(r, x, z));
   // The same test for the centreline streets (4b), which follow the real streets: the rectangles standing in for
   // irregular sidewalks may reach a little past their curbs, a whole park's bounds take in the streets around it and a
   // median mall's bounds (Allen St, Chrystie St...) both its roadways, so only a curb right at (x, z), median malls by
@@ -102,7 +107,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
     return false;
   }
   const blockedOnStreet = (x, z, clear) => !onLand(x - clear, x + clear, z - clear, z + clear) ||
-    query(x - 0.3, x + 0.3, z - 0.3, z + 0.3, (r) => r.curb) ||
+    query(x - 0.3, x + 0.3, z - 0.3, z + 0.3, (r) => curbAt(r, x, z)) ||
     nearMedian(x, z, clear) ||
     query(x - clear, x + clear, z - clear, z + clear, (r) => !r.curb && (r.maxX - r.minX < 50 || r.maxZ - r.minZ < 50) && !medianBox(r));
 
@@ -303,7 +308,9 @@ function buildRoadNetwork(sidewalks, obstacles) {
     }
     // Links the grid already carries: most of their length runs along an avenue (north-south) or a cross street
     const links = [];
-    for (const [a, b, ni, w, lanes, dir, inner] of RG.links) {
+    // (links of a city built from OpenStreetMap carry their level: viaducts & tunnels have no road deck to drive on yet)
+    for (const [a, b, ni, w, lanes, dir, inner, , level = 0] of RG.links) {
+      if (level !== 0) continue;
       const pts = [pos[a]];
       for (let k = 0; k < inner.length; k += 2) pts.push({ x: inner[k], z: inner[k + 1] });
       pts.push(pos[b]);
@@ -407,8 +414,11 @@ function buildRoadNetwork(sidewalks, obstacles) {
       if (A === B) continue;
       const pts = [{ x: A.x, z: A.z }, ...l.pts.slice(1, -1), { x: B.x, z: B.z }];
       // stations along it: the ends and every bend over 12° at least 15 m from the last station and from the far end
+      // (in a city built from OpenStreetMap also wherever the street strays over a metre from the straight line on from
+      // the last station, at least 8 m from it and from the far end: its long gentle curves)
       const stations = [A];
       let last = pts[0];
+      let lastK = 0;
       let rest = l.len;
       for (let k = 1; k < pts.length - 1; k++) {
         const p1 = pts[k];
@@ -417,11 +427,13 @@ function buildRoadNetwork(sidewalks, obstacles) {
         rest -= Math.hypot(p1.x - pts[k - 1].x, p1.z - pts[k - 1].z);
         let turn = Math.abs(Math.atan2(p2.z - p1.z, p2.x - p1.x) - Math.atan2(p1.z - last.z, p1.x - last.x));
         if (turn > Math.PI) turn = 2 * Math.PI - turn;
-        if (turn < 12 * DEG || d0 < 15 || rest < 15) continue;
+        const strays = OPEN_CITY && d0 >= 8 && rest >= 8 && strayFromChord(pts, lastK, k + 1) > 1.0;
+        if (!strays && (turn < 12 * DEG || d0 < 15 || rest < 15)) continue;
         const s = { x: p1.x, z: p1.z, hx: 0, hz: 0, signal: false, in: [], out: [], general: true, shape: true };
         nodes.push(s);
         stations.push(s);
         last = p1;
+        lastK = k;
       }
       stations.push(B);
       const lanes = lanesOf(l);
@@ -825,12 +837,17 @@ function buildRoadNetwork(sidewalks, obstacles) {
     e.moves = e.moves.filter((m) => m.out.some((j) => j >= 0));
   }
   for (const e of edges) e.from.out.push(e);
+  const reverses = (e, f) => f.to === e.from || e.dx * f.dx + e.dz * f.dz < -0.5;
   for (const e of edges) {
     const n = e.lanes.length;
+    // At a dead end, where the only road on is the way back, a city built from OpenStreetMap (with its cul-de-sacs and
+    // the streets cut off where its map ends) turns round: a U-turn, from the leftmost lane like a left turn
+    const turnaround = OPEN_CITY && e.to.out.every((f) => reverses(e, f));
     for (const f of e.to.out) {
-      if (f.to === e.from || e.dx * f.dx + e.dz * f.dz < -0.5) continue;
+      const uturn = turnaround && f.to === e.from;
+      if (!uturn && reverses(e, f)) continue;
       const cross = e.dx * f.dz - e.dz * f.dx;
-      e.moves.push({ to: f, turn: cross > 0.5 ? 'R' : cross < -0.5 ? 'L' : 'S', cross, out: new Array(n).fill(-1) });
+      e.moves.push({ to: f, turn: uturn || cross < -0.5 ? 'L' : cross > 0.5 ? 'R' : 'S', cross, uturn, out: new Array(n).fill(-1) });
     }
     // the straightest first: where a road forks, the branch going most nearly straight on keeps most of its lanes
     const ahead = (m) => e.dx * m.to.dx + e.dz * m.to.dz;
@@ -1109,6 +1126,26 @@ function buildRoadNetwork(sidewalks, obstacles) {
 
   const isRoadClear = (x, z, clear = 0.15) => !blockedOnStreet(x, z, clear);
   return { nodes, edges, paintEdges, connector, curvePoint, walkable, onSidewalk, isRoadClear };
+}
+
+// The farthest that points i0 + 1 .. i1 - 1 of a polyline ([{ x, z }]) lie from the chord between points i0 and i1
+function strayFromChord(pts, i0, i1) {
+  const a = pts[i0];
+  const b = pts[i1];
+  const L = Math.hypot(b.x - a.x, b.z - a.z) || 1e-9;
+  let far = 0;
+  for (let i = i0 + 1; i < i1; i++) far = Math.max(far, Math.abs((pts[i].x - a.x) * (b.z - a.z) - (pts[i].z - a.z) * (b.x - a.x)) / L);
+  return far;
+}
+
+function insidePoly(P, x, z) {
+  let inside = false;
+  for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+    const a = P[i];
+    const c = P[j];
+    if ((a.z > z) !== (c.z > z) && x < ((c.x - a.x) * (z - a.z)) / (c.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
 }
 
 // The largest strongly connected set of `list` (a Set), going on from item e to the items next(e)

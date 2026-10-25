@@ -1,5 +1,5 @@
 // tools/city/osm.mjs — OpenStreetMap (Overpass `out geom` JSON) into the world frame: polygons, streets & coastline land
-import { Raster, labelComponents, traceLabel, destair, rdpRing, ringArea, bbox } from './geom.mjs';
+import { Raster, labelComponents, traceLabel, destair, rdpRing, ringArea, bbox, pointInRing } from './geom.mjs';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Polygons
@@ -160,16 +160,32 @@ export function coastLand(coastWays, toWorld, clip, res = 2) {
   return R;
 }
 
-// Outer outlines of the raster's 4-connected regions of 1-cells of at least `minArea` m², clockwise in (x, z)
+// Outlines of the raster's 4-connected regions of 1-cells of at least `minArea` m², clockwise in (x, z), each with the
+// enclosed regions of 0-cells (lakes, rivers) of at least `minArea` as holes: [{ outer, holes }]
 export function traceRegions(R, minArea, eps = 1.5) {
-  const { lab, comps } = labelComponents(R.d, R.w, R.h);
-  const rings = [];
-  for (const c of comps) {
-    if (c.n * R.res * R.res < minArea) continue;
-    let ring = rdpRing(destair(traceLabel(lab, R.w, R.h, c, R.x0, R.z0, R.res), R.res * 1.5), eps);
-    if (ring.length < 3) continue;
+  const { w: W, h: H } = R;
+  const trace = (lab, c) => {
+    const ring = rdpRing(destair(traceLabel(lab, W, H, c, R.x0, R.z0, R.res), R.res * 1.5), eps);
     if (ringArea(ring) > 0) ring.reverse();
-    rings.push(ring);
+    return ring;
+  };
+  const big = (c) => c.n * R.res * R.res >= minArea;
+  const land = labelComponents(R.d, W, H);
+  const regions = [];
+  for (const c of land.comps) {
+    if (!big(c)) continue;
+    const outer = trace(land.lab, c);
+    if (outer.length >= 3) regions.push({ outer, holes: [] });
   }
-  return rings;
+  const wet = new Uint8Array(W * H);
+  for (let k = 0; k < W * H; k++) wet[k] = R.d[k] ? 0 : 1;
+  const water = labelComponents(wet, W, H);
+  for (const c of water.comps) {
+    if (!big(c) || c.i0 === 0 || c.j0 === 0 || c.i1 === W - 1 || c.j1 === H - 1) continue; // open water reaches the edge
+    const hole = trace(water.lab, c);
+    if (hole.length < 3) continue;
+    const owner = regions.find((r) => pointInRing(hole[0][0], hole[0][1], r.outer));
+    if (owner) owner.holes.push(hole);
+  }
+  return regions;
 }

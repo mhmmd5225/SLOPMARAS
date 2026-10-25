@@ -115,7 +115,7 @@ export function renderPreview(GEO, { mpp = 4, crop } = {}) {
   }
   const cv = new Canvas(x0, z0, x1, z1, mpp);
   cv.fill(C.water);
-  for (const r of GEO.land) cv.polygon([pts(r)], C.land);
+  for (const rings of GEO.land) cv.polygon(rings.map(pts), C.land);
   for (const w of GEO.water) cv.polygon([pts(w.ring)], C.water);
   for (const p of GEO.parks) cv.polygon(p.rings.map(pts), C.park);
   for (const [outline, rects, park, , , frames] of GEO.blocks) {

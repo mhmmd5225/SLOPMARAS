@@ -5,10 +5,12 @@
 // Output (GEO, version 2): x = grid east, z = grid south (north = -z), 1 unit = 1 m, origin at the city's origin point,
 // axes turned frame.bearingDeg from true north. Polygons & polylines are flat [x0, z0, x1, z1, ...] arrays.
 //   detail      the detailed area's outline (blocks are kept inside it)
-//   land        land outlines (coastline land minus inland water), water [{ name, ring }] inland water bodies
+//   land        land masses (coastline land minus inland water): [outline, ...holes] each; water [{ name, ring }] the
+//               inland water bodies
 //   parks       [{ name, kind, rings }]
 //   roadGraph   street centreline graph (tools/city/graph.mjs) of the vehicle roads at every level; each link ends with
-//               [class index (roadGraph.classes), level (0 at grade, > 0 bridges & viaducts, < 0 tunnels)]
+//               [class index (roadGraph.classes), level (0 at grade, > 0 viaducts, < 0 tunnels), over water (1: a
+//               bridge carrying its street across water at grade)]
 //   blocks      as js/nyc-geodata.js: [outline, lot rects, park share, park name, rectangular, frontage frames | 0]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -83,8 +85,8 @@ export async function buildCity(cityOrId, { out, data } = {}) {
   if (!landAt(ox, oz)) throw new Error(`the origin (${city.origin.label}) came out as water: check the coastline data`);
   let landCells = 0;
   for (const v of land.d) landCells += v;
-  const landRings = traceRegions(land, 2000);
-  log(`land: ${((landCells * 4) / 1e6).toFixed(2)} km² in the fetched box, ${landRings.length} outlines; ${water.length} inland water bodies`);
+  const landRegions = traceRegions(land, 2000);
+  log(`land: ${((landCells * 4) / 1e6).toFixed(2)} km² in the fetched box, ${landRegions.length} outlines with ${landRegions.reduce((t, r) => t + r.holes.length, 0)} holes; ${water.length} inland water bodies`);
 
   // Buildable: land more than `strip` m from water (or the data's edge)
   const buildable = new Uint8Array(land.d.length);
@@ -134,15 +136,33 @@ export async function buildCity(cityOrId, { out, data } = {}) {
   // --- Road graph --------------------------------------------------------------------------------------------------------
   const g = createGraph();
   const classIds = new Map(GRAPH_CLASSES.map((c, i) => [c, i]));
+  // Share of a polyline over water (every 2 m)
+  const overWater = (pts) => {
+    let n = 0, wet = 0;
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const [ax, az] = pts[k], [bx, bz] = pts[k + 1];
+      const steps = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az) / 2));
+      for (let s = 0; s < steps; s++) {
+        const x = ax + ((bx - ax) * (s + 0.5)) / steps, z = az + ((bz - az) * (s + 0.5)) / steps;
+        n++;
+        if (!landAt(x, z)) wet++;
+      }
+    }
+    return n ? wet / n : 0;
+  };
+  let waterBridges = 0;
   for (const p of streetPieces(roadsOSM, toWorld, (t) => classIds.has(t.highway))) {
     if (!p.pts.some((pt) => pointInRing(pt[0], pt[1], fetched))) continue;
     const a = g.nodeByKey(p.nodes[0], ...p.pts[0]);
     const b = g.nodeByKey(p.nodes[p.nodes.length - 1], ...p.pts[p.pts.length - 1]);
     if (a === b && p.pts.length < 3) continue;
-    g.addLink(a, b, p.name, p.w, p.lanes, p.dir, rdp(p.pts, 0.4), [classIds.get(p.cls), p.level]);
+    // a bridge mostly over water carries its street across at grade (on a deck); one over land is a viaduct
+    const wet = p.level > 0 && overWater(p.pts) >= 0.4 ? 1 : 0;
+    waterBridges += wet;
+    g.addLink(a, b, p.name, p.w, p.lanes, p.dir, rdp(p.pts, 0.4), [classIds.get(p.cls), wet ? 0 : p.level, wet]);
   }
   const roadGraph = { ...g.build(), classes: GRAPH_CLASSES };
-  log(`road graph: ${roadGraph.nodes.length / 2} nodes, ${roadGraph.links.length} links`);
+  log(`road graph: ${roadGraph.nodes.length / 2} nodes, ${roadGraph.links.length} links (${waterBridges} bridges over water at grade)`);
 
   // --- Assemble ----------------------------------------------------------------------------------------------------------
   const GEO = {
@@ -151,7 +171,7 @@ export async function buildCity(cityOrId, { out, data } = {}) {
     name: city.name,
     frame: { lat0: city.origin.lat, lon0: city.origin.lon, bearingDeg, origin: city.origin.label, units: 'm', sidewalk: city.sidewalk, strip: city.strip, driveSide: city.driveSide },
     detail: flat(detail),
-    land: landRings.map(flat),
+    land: landRegions.map((r) => [r.outer, ...r.holes].map(flat)),
     water: water.map((w) => ({ name: w.name, ring: flat(w.ring) })),
     parks: parks.map((p) => ({ name: p.name, kind: p.kind, rings: p.rings.map((r) => flat(rdpRing(r, 0.8))) })),
     roadGraph,

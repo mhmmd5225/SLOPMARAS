@@ -88,7 +88,8 @@ test('a city builds from OSM layers: land, blocks with lots, parks and the road 
       way(20, [21, 12, 23], [[LON0 - r, LAT0], [LON0, LAT0], [LON0 + r, LAT0]], { highway: 'residential', oneway: 'yes', name: 'East Street' }),
       way(30, [31, 32], [[LON0 - 0.002, LAT0 - 0.001], [LON0 - 0.001, LAT0 - 0.001]], { highway: 'service' })
     ]);
-    write('water', []);
+    const w = [-0.0025, -0.0012]; // a pond in the south-west quarter
+    write('water', [way(50, [51, 52, 53, 54, 51], [[LON0 + w[0], LAT0 + w[0]], [LON0 + w[1], LAT0 + w[0]], [LON0 + w[1], LAT0 + w[1]], [LON0 + w[0], LAT0 + w[1]], [LON0 + w[0], LAT0 + w[0]]], { natural: 'water', name: 'Test Pond' })]);
     const p = [0.0003, 0.0029];
     write('parks', [way(40, [41, 42, 43, 44, 41], [[LON0 + p[0], LAT0 + p[0]], [LON0 + p[1], LAT0 + p[0]], [LON0 + p[1], LAT0 + p[1]], [LON0 + p[0], LAT0 + p[1]], [LON0 + p[0], LAT0 + p[0]]], { leisure: 'park', name: 'Test Park' })]);
     const city = {
@@ -101,6 +102,7 @@ test('a city builds from OSM layers: land, blocks with lots, parks and the road 
     assert.equal(GEO.version, 2);
     assert.equal(GEO.frame.bearingDeg, 0);
     assert.equal(GEO.land.length, 1);
+    assert.equal(GEO.land[0].length, 2, 'the pond is a hole in the island');
     // the two streets cut the island into four blocks, each with lots; the north-east one is the park
     assert.equal(GEO.blocks.length, 4);
     for (const b of GEO.blocks) assert.ok(b[1].length > 0, 'every block has lots');

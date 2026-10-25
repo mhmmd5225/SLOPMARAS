@@ -1,4 +1,4 @@
-import { GEO } from './nyc-geodata.js';
+import { GEO } from './geodata.js';
 import {
   ROADS,
   BLOCKS,
@@ -25,7 +25,8 @@ import {
   EAST_RIVER_BRIDGES,
   OUTER_BRIDGES,
   getLocationLabel,
-  isTypingInField
+  isTypingInField,
+  CITY
 } from './city-config.js';
 
 // js/nyc-map.js
@@ -83,8 +84,9 @@ const MODELLED_LANDMARKS = [
   'Flatiron Building', 'One World Trade Center', 'New York Stock Exchange'
 ];
 
-// Borough (0), waterway (1) & neighbourhood (2) names at their real places (world metres)
-const AREA_LABELS = [
+// Borough (0), waterway (1) & neighbourhood (2) names at their real places (world metres); none yet for the cities
+// built from OpenStreetMap
+const AREA_LABELS = CITY.open ? [] : [
   ['MANHATTAN', 120, -1500, 0], ['NEW JERSEY', -7000, 2000, 0], ['BROOKLYN', 7850, 8780, 0], ['QUEENS', 8810, -1680, 0],
   ['THE BRONX', 1010, -9640, 0], ['STATEN ISLAND', -1800, 19220, 0],
   ['HUDSON RIVER', -2680, -300, 1], ['HUDSON RIVER', -2650, -5600, 1], ['EAST RIVER', 1700, 800, 1],
@@ -456,6 +458,10 @@ class NYCMapSystem {
     if (needle) needle.setAttribute('transform', `rotate(${-GRID_BEARING} 22 22)`);
 
     this.modal = document.getElementById('fullmap-modal');
+    if (CITY.open) {
+      const title = this.modal && this.modal.querySelector('.fullmap-title h2');
+      if (title) title.textContent = `${CITY.name} Street Atlas`;
+    }
     this.fullCanvas = document.getElementById('fullmap-canvas');
     this.fullCanvasWrap = document.getElementById('fullmap-canvas-wrap');
     this.fullCtx = this.fullCanvas ? this.fullCanvas.getContext('2d') : null;

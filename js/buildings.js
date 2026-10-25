@@ -39,7 +39,7 @@ import {
   createBillboardMaterial,
   WALL_KINDS
 } from './tsl-materials.js';
-import { GEO } from './nyc-geodata.js';
+import { GEO } from './geodata.js';
 import { fdrViaduct, pavedPlazaRects, parkTreeSites, sidewalkBlocks } from './city-grid.js';
 
 // js/buildings.js
@@ -1796,6 +1796,8 @@ function buildCityBlocks(scene) {
       case 'civic_center':
       case 'fidi': return OFFICE_FIDI;
       case 'battery_park_city': return OFFICE_BATTERY_PARK_CITY;
+      // A city built from OpenStreetMap (open-city-config.js): towers on the big lots, mid-rise blocks on the rest
+      case 'generic': return (blk.maxX - blk.minX) * (blk.maxZ - blk.minZ) > 3000 && chance(0.7) ? OFFICE_MIDTOWN : chance(0.5) ? RES_EAST_MIDTOWN : RES_CHELSEA;
       default: return OFFICE_MIDTOWN;
     }
   }

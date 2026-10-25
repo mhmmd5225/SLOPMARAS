@@ -38,7 +38,9 @@ import {
   ALL_STREETS,
   blockAt,
   EAST_RIVER_BRIDGES,
-  CUT_Z
+  CUT_Z,
+  CITY,
+  LAND_REGIONS
 } from './city-config.js';
 import {
   createRoadSurfaceMaterial,
@@ -57,7 +59,7 @@ import {
   createRoadPaintMaterial,
   createTunnelShadeMaterial
 } from './tsl-materials.js';
-import { GEO } from './nyc-geodata.js';
+import { GEO } from './geodata.js';
 
 // Live construction data consumed by the building and street-detail builders after buildCityGrid().
 let centralParkClearings;
@@ -215,7 +217,7 @@ function batchStaticGroupMeshes(rootGroup, excludeMaterials = null) {
  * in (x, -z) space so that rotating by rotateX(-Math.PI / 2) maps (x, -z, 0) -> (x, 0, z)
  * with an upward (+Y) surface normal.
  */
-function createWorldXZShape(pts) {
+function createWorldXZShape(pts, holes = []) {
   const shape = new THREE.Shape();
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
@@ -223,7 +225,24 @@ function createWorldXZShape(pts) {
     else shape.lineTo(p.x, -p.z);
   }
   shape.closePath();
+  for (const hole of holes) {
+    const path = new THREE.Path();
+    hole.forEach((p, i) => (i === 0 ? path.moveTo(p.x, -p.z) : path.lineTo(p.x, -p.z)));
+    path.closePath();
+    shape.holes.push(path);
+  }
   return shape;
+}
+
+// A land region ({ outer, holes }, city-config.js LAND_REGIONS) as a slab from bottomY up `height`, or a flat surface
+function createRegionMesh({ outer, holes }, bottomY, height, material) {
+  const shape = createWorldXZShape(outer, holes);
+  const geo = height > 0 ? new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 1 }) : new THREE.ShapeGeometry(shape, 1);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, bottomY, 0);
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.receiveShadow = true;
+  return mesh;
 }
 
 function createExtrudedPolygonMesh(pts, bottomY, height, material, receiveShadow = true, castShadow = false) {
@@ -1475,7 +1494,91 @@ function buildWaterfrontPiers(group) {
   B.build(group, new Set([BL, PA]));
 }
 
+/**
+ * Raised sidewalk slabs & granite curbstones of the blocks (curb islands, city-config.js BLOCKS) into `group`:
+ * rectangular islands as instanced slabs, the rest extruded from their outlines, a clipped hedge on the planted malls.
+ * `skip(b)`: blocks built elsewhere; `cover`: how far the lot rects of an irregular island grow back out to its curb for
+ * the consumers working on rectangles. Returns the slabs ({ cx, cz, w, d, block, cover? }) and the curbs the road
+ * network bounds the roads with: rects, or with `outlines` an irregular island's own outline ({ minX..maxZ, poly })
+ * instead of its grown lot rects, which reach past a curb running at an angle to the axes (islands without lots, the
+ * traffic islands & medians between the roadways of divided roads, bound none either way)
+ */
+function buildBlockSidewalks(group, blocks, { sidewalkMat, curbMat, medianHedgeMat }, { addFootprint, skip, cover, outlines = false }) {
+  const dummy = new THREE.Object3D();
+  const unitBox = new THREE.BoxGeometry(1, 1, 1);
+  const blockSidewalks = []; // { cx, cz, w, d, block } axis-aligned slabs (irregular islands: their lot cover)
+  const roadSidewalks = []; // the curbs road-network.js bounds the roads with (medians go in as footprints)
+  const slabGeos = [];
+  const curbGeos = [];
+  const hedgeGeos = [];
+  const SW_TOP = 0.22;
+  for (const b of blocks) {
+    if (skip(b)) continue;
+    if (b.rect) {
+      const slab = { cx: (b.minX + b.maxX) * 0.5, cz: (b.minZ + b.maxZ) * 0.5, w: b.maxX - b.minX, d: b.maxZ - b.minZ, block: b };
+      blockSidewalks.push(slab);
+      if (b.median) addFootprint(slab.cx, slab.cz, slab.w, slab.d);
+      else roadSidewalks.push({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ });
+    } else {
+      // curb (granite) ring under a sidewalk slab inset by 0.25 m, like the instanced pair below
+      const curb = createExtrudedPolygonMesh(b.poly, 0.0, 0.18, curbMat).geometry;
+      curbGeos.push(curb);
+      const inner = offsetPolygonInward(b.poly, 0.25);
+      if (inner) slabGeos.push(createExtrudedPolygonMesh(inner, 0.03, SW_TOP - 0.03, sidewalkMat).geometry);
+      // rect cover for the consumers that work on rectangles: the lot rects grown back out to the curb
+      for (const [x0, x1, z0, z1] of b.rects) {
+        const r = { minX: x0 - cover, maxX: x1 + cover, minZ: z0 - cover, maxZ: z1 + cover };
+        blockSidewalks.push({ cx: (r.minX + r.maxX) * 0.5, cz: (r.minZ + r.maxZ) * 0.5, w: r.maxX - r.minX, d: r.maxZ - r.minZ, block: b, cover: true });
+        if (!b.median && !outlines) roadSidewalks.push(r);
+      }
+      if (!b.median && outlines && b.rects.length) roadSidewalks.push({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ, poly: b.poly });
+      if (b.median) addFootprint((b.minX + b.maxX) * 0.5, (b.minZ + b.maxZ) * 0.5, b.maxX - b.minX, b.maxZ - b.minZ);
+    }
+    // Planted malls down the middle of Park Ave, Broadway (Upper West Side), Allen St...: a clipped hedge on the slab
+    if (b.median && Math.min(b.maxX - b.minX, b.maxZ - b.minZ) > 2.2) {
+      const hedge = offsetPolygonInward(b.poly, 1.0);
+      if (hedge) hedgeGeos.push(createExtrudedPolygonMesh(hedge, SW_TOP, 0.55, medianHedgeMat).geometry);
+    }
+  }
+  const mergeInto = (geos, mat, cast = false) => {
+    for (let i = 0; i < geos.length; i += 400) {
+      const m = new THREE.Mesh(mergeGeometries(geos.slice(i, i + 400), false), mat);
+      m.receiveShadow = true;
+      m.castShadow = cast;
+      group.add(m);
+    }
+  };
+  mergeInto(curbGeos, curbMat, true);
+  mergeInto(slabGeos, sidewalkMat);
+  mergeInto(hedgeGeos, medianHedgeMat, true);
+
+  const rectSlabs = blockSidewalks.filter((s) => !s.cover);
+  const swInstanced = new THREE.InstancedMesh(unitBox, sidewalkMat, rectSlabs.length);
+  const curbInstanced = new THREE.InstancedMesh(unitBox, curbMat, rectSlabs.length);
+  swInstanced.receiveShadow = true;
+  curbInstanced.receiveShadow = true;
+  curbInstanced.castShadow = true;
+
+  rectSlabs.forEach((blk, i) => {
+    dummy.rotation.set(0, 0, 0);
+    dummy.position.set(blk.cx, 0.125, blk.cz);
+    dummy.scale.set(blk.w - 0.5, 0.19, blk.d - 0.5);
+    dummy.updateMatrix();
+    swInstanced.setMatrixAt(i, dummy.matrix);
+
+    dummy.position.set(blk.cx, 0.095, blk.cz);
+    dummy.scale.set(blk.w, 0.17, blk.d);
+    dummy.updateMatrix();
+    curbInstanced.setMatrixAt(i, dummy.matrix);
+  });
+  swInstanced.instanceMatrix.needsUpdate = true;
+  curbInstanced.instanceMatrix.needsUpdate = true;
+  group.add(swInstanced, curbInstanced);
+  return { blockSidewalks, roadSidewalks };
+}
+
 function buildCityGrid(scene) {
+  if (CITY.open) return buildOpenCityGrid(scene);
   const group = new THREE.Group();
   group.name = 'ManhattanCityGrid';
 
@@ -1538,73 +1641,11 @@ function buildCityGrid(scene) {
   const sidewalkMat = createSidewalkMaterial();
   const curbMat = createCurbMaterial();
   const medianHedgeMat = new THREE.MeshStandardNodeMaterial({ color: 0x366e3b, roughness: 0.82 });
-  const blockSidewalks = []; // { cx, cz, w, d, block } axis-aligned slabs (irregular islands: their lot cover)
-  const roadSidewalks = []; // the curbs road-network.js bounds the roads with (medians go in as footprints)
-  const slabGeos = [];
-  const curbGeos = [];
-  const hedgeGeos = [];
-  const SW_TOP = 0.22;
-  for (const b of BLOCKS) {
-    if (b.park > 0.6 && !b.median && b.parkName !== 'Bryant Park') continue; // parks build their own perimeter sidewalk (sections 7, 7B)
-    if (b.rect) {
-      const slab = { cx: (b.minX + b.maxX) * 0.5, cz: (b.minZ + b.maxZ) * 0.5, w: b.maxX - b.minX, d: b.maxZ - b.minZ, block: b };
-      blockSidewalks.push(slab);
-      if (b.median) addFootprint(slab.cx, slab.cz, slab.w, slab.d);
-      else roadSidewalks.push({ minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ });
-    } else {
-      // curb (granite) ring under a sidewalk slab inset by 0.25 m, like the instanced pair below
-      const curb = createExtrudedPolygonMesh(b.poly, 0.0, 0.18, curbMat).geometry;
-      curbGeos.push(curb);
-      const inner = offsetPolygonInward(b.poly, 0.25);
-      if (inner) slabGeos.push(createExtrudedPolygonMesh(inner, 0.03, SW_TOP - 0.03, sidewalkMat).geometry);
-      // rect cover for the consumers that work on rectangles: the lot rects grown back out to the curb
-      for (const [x0, x1, z0, z1] of b.rects) {
-        const r = { minX: x0 - 4.4, maxX: x1 + 4.4, minZ: z0 - 4.4, maxZ: z1 + 4.4 };
-        blockSidewalks.push({ cx: (r.minX + r.maxX) * 0.5, cz: (r.minZ + r.maxZ) * 0.5, w: r.maxX - r.minX, d: r.maxZ - r.minZ, block: b, cover: true });
-        if (!b.median) roadSidewalks.push(r);
-      }
-      if (b.median) addFootprint((b.minX + b.maxX) * 0.5, (b.minZ + b.maxZ) * 0.5, b.maxX - b.minX, b.maxZ - b.minZ);
-    }
-    // Planted malls down the middle of Park Ave, Broadway (Upper West Side), Allen St...: a clipped hedge on the slab
-    if (b.median && Math.min(b.maxX - b.minX, b.maxZ - b.minZ) > 2.2) {
-      const hedge = offsetPolygonInward(b.poly, 1.0);
-      if (hedge) hedgeGeos.push(createExtrudedPolygonMesh(hedge, SW_TOP, 0.55, medianHedgeMat).geometry);
-    }
-  }
-  const mergeInto = (geos, mat, cast = false) => {
-    for (let i = 0; i < geos.length; i += 400) {
-      const m = new THREE.Mesh(mergeGeometries(geos.slice(i, i + 400), false), mat);
-      m.receiveShadow = true;
-      m.castShadow = cast;
-      group.add(m);
-    }
-  };
-  mergeInto(curbGeos, curbMat, true);
-  mergeInto(slabGeos, sidewalkMat);
-  mergeInto(hedgeGeos, medianHedgeMat, true);
-
-  const rectSlabs = blockSidewalks.filter((s) => !s.cover);
-  const swInstanced = new THREE.InstancedMesh(unitBox, sidewalkMat, rectSlabs.length);
-  const curbInstanced = new THREE.InstancedMesh(unitBox, curbMat, rectSlabs.length);
-  swInstanced.receiveShadow = true;
-  curbInstanced.receiveShadow = true;
-  curbInstanced.castShadow = true;
-
-  rectSlabs.forEach((blk, i) => {
-    dummy.rotation.set(0, 0, 0);
-    dummy.position.set(blk.cx, 0.125, blk.cz);
-    dummy.scale.set(blk.w - 0.5, 0.19, blk.d - 0.5);
-    dummy.updateMatrix();
-    swInstanced.setMatrixAt(i, dummy.matrix);
-
-    dummy.position.set(blk.cx, 0.095, blk.cz);
-    dummy.scale.set(blk.w, 0.17, blk.d);
-    dummy.updateMatrix();
-    curbInstanced.setMatrixAt(i, dummy.matrix);
+  const { blockSidewalks, roadSidewalks } = buildBlockSidewalks(group, BLOCKS, { sidewalkMat, curbMat, medianHedgeMat }, {
+    addFootprint,
+    skip: (b) => b.park > 0.6 && !b.median && b.parkName !== 'Bryant Park', // parks build their own perimeter sidewalk (sections 7, 7B)
+    cover: 4.4
   });
-  swInstanced.instanceMatrix.needsUpdate = true;
-  curbInstanced.instanceMatrix.needsUpdate = true;
-  group.add(swInstanced, curbInstanced);
 
   // 6. Times Square Pedestrian Plazas, Duffy Square TKTS Red Steps, Herald Square & Flatiron Plaza
   //    Curb-height light-grey granite paver plazas in Broadway's roadbed with granite benches & planters, plus the
@@ -2526,6 +2567,101 @@ function buildCityGrid(scene) {
   // Player colliders of the South Street Viaduct's columns, ramps and portal
   const colliders = (fdrViaduct && fdrViaduct.colliders) || [];
   return { group, sidewalks, footprints, highwayLanes, colliders };
+}
+
+/**
+ * The ground of a city built from OpenStreetMap (open-city-config.js): the harbour water, each land mass as a seawall
+ * slab under an asphalt deck at y = 0 with its rivers and lakes cut out, every block's raised sidewalk & curbs, and the
+ * park blocks' lawns inside a sidewalk border. Same return value & live exports as buildCityGrid.
+ */
+function buildOpenCityGrid(scene) {
+  const group = new THREE.Group();
+  group.name = 'CityGrid';
+  const footprints = [];
+  const addFootprint = (x, z, w, d) => footprints.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+
+  const waterMat = createWaterMaterial();
+  const waterGeo = new THREE.PlaneGeometry(60000, 60000, 1, 1);
+  waterGeo.rotateX(-Math.PI / 2);
+  const water = new THREE.Mesh(waterGeo, waterMat);
+  water.position.set(0, ISLAND_BOUNDS.waterLevel, 0);
+  group.add(water);
+
+  const seawallMat = new THREE.MeshStandardNodeMaterial({ color: 0x5c5a55, roughness: 0.82, metalness: 0.1 });
+  const roadMat = createRoadSurfaceMaterial();
+  for (const region of LAND_REGIONS) {
+    group.add(createRegionMesh(region, -2.35, 2.31, seawallMat));
+    group.add(createRegionMesh(region, 0.0, 0, roadMat));
+  }
+
+  const sidewalkMat = createSidewalkMaterial();
+  const curbMat = createCurbMaterial();
+  const medianHedgeMat = new THREE.MeshStandardNodeMaterial({ color: 0x366e3b, roughness: 0.82 });
+  const sidewalk = GEO.frame.sidewalk || 4.6;
+  const { blockSidewalks, roadSidewalks } = buildBlockSidewalks(group, BLOCKS, { sidewalkMat, curbMat, medianHedgeMat }, {
+    addFootprint,
+    skip: () => false,
+    cover: sidewalk - 0.2,
+    outlines: true
+  });
+  // Bridges carrying streets across the water at grade (open-city-config.js: the street graph's links flagged over
+  // water): a concrete deck under the roadway with a parapet along each edge, segment by segment
+  const deckMat = new THREE.MeshStandardNodeMaterial({ color: 0x8a8780, roughness: 0.8, metalness: 0.05 });
+  const deckGeos = [];
+  const RG = GEO.roadGraph;
+  const deckBox = (ax, az, bx, bz, w, y0, h, side) => {
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 0.5) return;
+    const ux = (bx - ax) / len, uz = (bz - az) / len;
+    const g = new THREE.BoxGeometry(len + (side ? 0 : w), h, side ? 0.35 : w);
+    g.rotateY(-Math.atan2(uz, ux));
+    g.translate((ax + bx) / 2 - uz * side, y0 + h / 2, (az + bz) / 2 + ux * side);
+    deckGeos.push(g);
+  };
+  for (const l of RG.links) {
+    if (l[9] !== 1) continue;
+    const pts = [[RG.nodes[l[0] * 2], RG.nodes[l[0] * 2 + 1]]];
+    for (let k = 0; k < l[6].length; k += 2) pts.push([l[6][k], l[6][k + 1]]);
+    pts.push([RG.nodes[l[1] * 2], RG.nodes[l[1] * 2 + 1]]);
+    const w = l[3] + 3; // the roadway and a walk each side
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const [ax, az] = pts[k], [bx, bz] = pts[k + 1];
+      deckBox(ax, az, bx, bz, w, -1.1, 1.08, 0);
+      for (const side of [-w / 2, w / 2]) deckBox(ax, az, bx, bz, w, -0.02, 1.1, side);
+    }
+  }
+  if (deckGeos.length) {
+    const deck = new THREE.Mesh(mergeGeometries(deckGeos, false), deckMat);
+    deck.receiveShadow = deck.castShadow = true;
+    group.add(deck);
+  }
+
+  // Parks: lawn over the sidewalk slab, a walk's width in from the curb
+  const lawnMat = createParkLawnMaterial(false);
+  const lawnGeos = [];
+  for (const b of BLOCKS) {
+    if (!(b.park > 0.6) || b.median) continue;
+    const inner = offsetPolygonInward(b.poly, 3.0);
+    if (inner) lawnGeos.push(createFlatPolygonMesh(inner, 0.235, lawnMat).geometry);
+  }
+  for (let i = 0; i < lawnGeos.length; i += 400) {
+    const m = new THREE.Mesh(mergeGeometries(lawnGeos.slice(i, i + 400), false), lawnMat);
+    m.receiveShadow = true;
+    group.add(m);
+  }
+
+  // Live exports read by buildings.js & street-details.js
+  centralParkClearings = null;
+  parkTreeSites = [];
+  parkLampSites = [];
+  pavedPlazaRects = [];
+  sidewalkBlocks = blockSidewalks;
+  fdrViaduct = null;
+
+  batchStaticGroupMeshes(group, new Set([waterMat, roadMat, lawnMat]));
+  scene.add(group);
+  console.info(`[cityGrid] ${CITY.name}: ${LAND_REGIONS.length} land masses, ${BLOCKS.length} blocks, ${lawnGeos.length} park lawns, ${deckGeos.length / 3} bridge deck segments`);
+  return { group, sidewalks: roadSidewalks, footprints, highwayLanes: [], colliders: [] };
 }
 
 // =====================================================================================================================

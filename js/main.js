@@ -3,9 +3,8 @@ import { pass, mrt, output, normalView, positionView, metalness, roughness, vec2
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
-import { getLocationLabel, isTypingInField, ROADS, NYC_LANDMARKS, TELEPORT_LOCATIONS } from './city-config.js';
+import { getLocationLabel, isTypingInField, ROADS, NYC_LANDMARKS, TELEPORT_LOCATIONS, CITY, SPAWN } from './city-config.js';
 import { buildCityGrid } from './city-grid.js';
-import { buildBoroughs } from './boroughs.js';
 import { buildLandmarks } from './landmarks.js';
 import { buildCityBlocks } from './buildings.js';
 import { buildStreetDetails } from './street-details.js';
@@ -70,21 +69,25 @@ async function initApp() {
   markInit('lighting');
 
   if (loadingStatus) {
-    loadingStatus.textContent = 'Constructing Manhattan Grid, Landmarks & Streetscape...';
+    loadingStatus.textContent = CITY.open ? `Constructing ${CITY.name}...` : 'Constructing Manhattan Grid, Landmarks & Streetscape...';
   }
 
-  // 3. Build Manhattan Geography, Iconic Landmarks, Blocks, Street Details & Traffic
+  // 3. Build Manhattan Geography, Iconic Landmarks, Blocks, Street Details & Traffic. A city built from OpenStreetMap
+  //    (city-config.js CITY.open) has its ground, blocks and traffic, without New York's boroughs, landmarks & street
+  //    furniture
   const cityGrid = buildCityGrid(scene);
   markInit('cityGrid');
-  const boroughs = buildBoroughs(scene, { sidewalks: cityGrid.sidewalks });
+  const boroughs = CITY.open ? { colliders: [] } : (await import('./boroughs.js')).buildBoroughs(scene, { sidewalks: cityGrid.sidewalks });
   markInit('boroughs');
-  const { colliders: landmarkColliders } = buildLandmarks(scene);
+  const { colliders: landmarkColliders } = CITY.open ? { colliders: [] } : buildLandmarks(scene);
   markInit('landmarks');
   const cityBlocks = buildCityBlocks(scene);
   markInit('blocks');
   const allColliders = [...landmarkColliders, ...cityBlocks.colliders, ...boroughs.colliders, ...(cityGrid.colliders || [])];
 
-  const streetDetails = buildStreetDetails(scene);
+  const streetDetails = CITY.open
+    ? { footprints: [], signalClock: { value: 0 }, audioSignals: [], update: null }
+    : buildStreetDetails(scene);
   markInit('streetDetails');
   // Buildings turned along non-grid streets have oriented colliders whose world bounds reach past their lots: they stay
   // inside the property line anyway, so the road network (lanes & sidewalks) doesn't need them.
@@ -101,9 +104,11 @@ async function initApp() {
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
   const controllerManager = new ThirdPersonControllerManager(scene, allColliders);
-  // Reuse teleport placement so saved players return at rest, close to their last positions.
+  // Reuse teleport placement so saved players return at rest, close to their last positions. Each city keeps its own.
+  const playerStateKey = CITY.open ? `${CITY.id}-player-state` : 'nyc-player-state';
+  let restored = false;
   try {
-    const saved = JSON.parse(localStorage.getItem('nyc-player-state'));
+    const saved = JSON.parse(localStorage.getItem(playerStateKey));
     if (saved?.version === 1) {
       for (const mode of Object.keys(controllerManager.entities)) {
         const p = saved.entities?.[mode];
@@ -112,15 +117,29 @@ async function initApp() {
         controllerManager.teleportActiveTo(p.x, p.z, p.heading, p.y);
       }
       controllerManager.setMode(Object.hasOwn(controllerManager.entities, saved.activeMode) ? saved.activeMode : 'car');
+      restored = true;
     }
   } catch { /* Missing or unavailable storage does not prevent playing. */ }
+  // A fresh session in a city built from OpenStreetMap: every mode starts at its street (controllers.js places them
+  // around 5th Ave & 37th St)
+  if (CITY.open && !restored) {
+    // the car on the street, the cyclist behind it, the pedestrian on the kerb beside it, the helicopter overhead
+    const fx = Math.sin(SPAWN.heading), fz = Math.cos(SPAWN.heading);
+    const start = { car: [0, 0], cyclist: [-14, 0], person: [-6, 12], helicopter: [-40, 0] };
+    for (const mode of Object.keys(controllerManager.entities)) {
+      const [back, side] = start[mode] || [0, 0];
+      controllerManager.setMode(mode);
+      controllerManager.teleportActiveTo(SPAWN.x + fx * back - fz * side, SPAWN.z + fz * back + fx * side, SPAWN.heading);
+    }
+    controllerManager.setMode('car');
+  }
 
   function savePlayerState() {
     try {
       const entities = Object.fromEntries(Object.entries(controllerManager.entities).map(([mode, entity]) => [mode, {
         x: entity.position.x, y: entity.position.y, z: entity.position.z, heading: entity.heading
       }]));
-      localStorage.setItem('nyc-player-state', JSON.stringify({ version: 1, activeMode: controllerManager.activeMode, entities }));
+      localStorage.setItem(playerStateKey, JSON.stringify({ version: 1, activeMode: controllerManager.activeMode, entities }));
     } catch { /* Storage may be disabled or full. */ }
   }
 
@@ -150,7 +169,7 @@ async function initApp() {
 
   // Island-wide static geometry: chunk & distance-cull the small props, shadow stand-ins for the big casters
   // (scene-culling.js)
-  const cullingRoots = ['ManhattanCityGrid', 'ManhattanCityBlocks', 'ManhattanStreetDetails', 'ManhattanLandmarks', 'Boroughs']
+  const cullingRoots = ['ManhattanCityGrid', 'CityGrid', 'ManhattanCityBlocks', 'ManhattanStreetDetails', 'ManhattanLandmarks', 'Boroughs']
     .map((name) => scene.getObjectByName(name))
     .filter(Boolean);
   setupSceneCulling(scene, cullingRoots, lightingSystem.sunLight.shadow);
