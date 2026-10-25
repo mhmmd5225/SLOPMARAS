@@ -461,10 +461,6 @@ class NYCMapSystem {
     if (needle) needle.setAttribute('transform', `rotate(${-GRID_BEARING} 22 22)`);
 
     this.modal = document.getElementById('fullmap-modal');
-    if (CITY.open) {
-      const title = this.modal && this.modal.querySelector('.fullmap-title h2');
-      if (title) title.textContent = `${CITY.name} Street Atlas`;
-    }
     this.fullCanvas = document.getElementById('fullmap-canvas');
     this.fullCanvasWrap = document.getElementById('fullmap-canvas-wrap');
     this.fullCtx = this.fullCanvas ? this.fullCanvas.getContext('2d') : null;

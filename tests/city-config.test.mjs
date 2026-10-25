@@ -22,8 +22,10 @@ function inCity(city, body) {
   return JSON.parse(r.stdout);
 }
 
-test('New York stays the default city', () => {
-  const out = inCity('', 'return { city: config.CITY, blocks: config.BLOCKS.length, same: config.BLOCKS === nyc.BLOCKS };');
+test('Singapore is the default city and New York is ?city=nyc', () => {
+  assert.equal(inCity('', 'return config.CITY.id;'), 'singapore');
+  assert.equal(inCity('atlantis', 'return config.CITY.id;'), 'singapore', 'an unknown city falls back to the default');
+  const out = inCity('nyc', 'return { city: config.CITY, blocks: config.BLOCKS.length, same: config.BLOCKS === nyc.BLOCKS };');
   assert.deepEqual(out.city, { id: 'nyc', name: 'New York', short: 'NY', open: false, driveSide: 'right' });
   assert.ok(out.same && out.blocks > 2000);
 });

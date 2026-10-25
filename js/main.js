@@ -20,18 +20,47 @@ import { setupSceneCulling, updateSceneCulling } from './scene-culling.js';
 import { CityAudioSystem } from './audio-system.js';
 
 // js/main.js
-// Main entry point for New York City (Midtown Manhattan) in Three.js WebGPURenderer & TSL (three.js dev, see index.html)
+// Main entry point for the city simulation (Singapore by default, ?city=nyc for New York) in Three.js WebGPURenderer &
+// TSL (three.js dev, see index.html)
+
+// The page's words for the simulated city: index.html is written for Singapore, the default city; New York keeps the
+// page it always had
+function nameThePage() {
+  const title = `Slop ${CITY.name}`;
+  const text = CITY.open
+    ? {
+      description: `A ${CITY.name} city simulation built with three.js: walk, drive, cycle or fly through its real streets.`,
+      map: `Full ${CITY.name} street map [M]`, radar: `Live ${CITY.name} street radar minimap`,
+      radarTitle: `Open the full ${CITY.name} street map [M]`, modal: `Full ${CITY.name} street map (interactive)`,
+      atlas: `${CITY.name} Street Atlas`, compass: 'True north · the map turns with the streets',
+      all: `All of ${CITY.name}`, fit: `Fit all of ${CITY.name}`
+    }
+    : {
+      description: 'Photorealistic GTA-style 3D Slop New York simulation built with Three.js WebGPURenderer and TSL shaders featuring complete Manhattan street map (125th St to Battery Park), third-person navigation (Person, Car, Cyclist, Helicopter), and 11 cinematic cameras at 60 FPS.',
+      map: 'Full New York City street map [M]', radar: 'Live NYC Street Radar Minimap',
+      radarTitle: 'Open the full New York City street map [M]', modal: 'Full New York City Interactive Street Map',
+      atlas: 'Manhattan Street Atlas', compass: "True north · Manhattan's street grid runs 29° east of it",
+      all: 'All of Manhattan (125th St to Battery Park)', fit: 'Fit all of Manhattan'
+    };
+  const set = (selector, fn) => { for (const el of document.querySelectorAll(selector)) fn(el); };
+  document.title = title;
+  set('meta[name="description"]', (el) => el.setAttribute('content', text.description));
+  set('.loader-title, h1', (el) => (el.textContent = title));
+  set('.mta-bullet', (el) => (el.textContent = CITY.short));
+  set('#canvas-container', (el) => el.setAttribute('aria-label', `3D Interactive ${title} Viewport`));
+  set('#btn-open-map', (el) => (el.title = text.map));
+  set('#minimap-card', (el) => { el.title = text.radarTitle; el.setAttribute('aria-label', text.radar); });
+  set('#fullmap-modal', (el) => el.setAttribute('aria-label', text.modal));
+  set('.fullmap-title h2', (el) => (el.textContent = text.atlas));
+  set('.map-compass', (el) => (el.title = text.compass));
+  set('#map-view-all', (el) => { el.title = text.all; el.setAttribute('aria-label', text.fit); });
+}
 
 async function initApp() {
   const container = document.getElementById('canvas-container');
   const loadingOverlay = document.getElementById('loading-overlay');
   const loadingStatus = document.getElementById('loading-status');
-  // A city built from OpenStreetMap names itself on the page (index.html is New York's)
-  if (CITY.open) {
-    document.title = `Slop ${CITY.name}`;
-    for (const el of document.querySelectorAll('.loader-title, h1')) el.textContent = `Slop ${CITY.name}`;
-    for (const el of document.querySelectorAll('.mta-bullet')) el.textContent = CITY.short;
-  }
+  nameThePage();
   const loadingTrack = loadingOverlay ? loadingOverlay.querySelector('.loader-track') : null;
   const loadingFill = document.getElementById('loading-progress');
   // The loading bar sweeps while the city is being built (the main thread is busy) and fills as the shaders compile
@@ -241,31 +270,31 @@ async function initApp() {
   const renderPipeline = new THREE.RenderPipeline(renderer, colorGrade.outputNode);
 
   // 6. Wire UI Controls (Strictly using safe DOM APIs: textContent, classList, addEventListener)
-  // A city built from OpenStreetMap offers teleports to its own places, and only the cameras following the player and
-  // the auto-director (the scenic ones look at New York's landmarks)
+  // The teleport menu lists the city's destinations (city-config.js TELEPORT_LOCATIONS). A city built from
+  // OpenStreetMap offers only the cameras following the player and the auto-director (the scenic ones look at New
+  // York's landmarks).
   const CAMERAS = CITY.open ? CAMERA_PRESETS.filter((p) => p.category === 'follow' || p.id === 'drone') : CAMERA_PRESETS;
   const cameraOffered = (id) => CAMERAS.some((p) => p.id === id);
-  if (CITY.open) {
-    const popover = document.getElementById('teleport-popover');
-    if (popover) {
-      for (const btn of popover.querySelectorAll('[data-teleport]')) btn.remove();
-      for (const [key, loc] of Object.entries(TELEPORT_LOCATIONS)) {
-        const btn = document.createElement('button');
-        btn.className = 'pop-item tp-btn';
-        btn.type = 'button';
-        btn.dataset.teleport = key;
-        const name = document.createElement('span');
-        name.className = 'pop-name';
-        name.textContent = loc.name;
-        const sub = document.createElement('span');
-        sub.className = 'pop-sub';
-        sub.textContent = loc.sub;
-        btn.append(name, sub);
-        popover.appendChild(btn);
-      }
+  const teleportPopover = document.getElementById('teleport-popover');
+  if (teleportPopover) {
+    for (const btn of teleportPopover.querySelectorAll('[data-teleport]')) btn.remove();
+    for (const [key, loc] of Object.entries(TELEPORT_LOCATIONS)) {
+      const btn = document.createElement('button');
+      btn.id = `tp-${key}`;
+      btn.className = 'pop-item tp-btn';
+      btn.type = 'button';
+      btn.dataset.teleport = key;
+      const name = document.createElement('span');
+      name.className = 'pop-name';
+      name.textContent = loc.name;
+      const sub = document.createElement('span');
+      sub.className = 'pop-sub';
+      sub.textContent = loc.sub;
+      btn.append(name, sub);
+      teleportPopover.appendChild(btn);
     }
-    for (const btn of document.querySelectorAll('[data-camera]')) if (!cameraOffered(btn.dataset.camera)) btn.remove();
   }
+  for (const btn of document.querySelectorAll('[data-camera]')) if (!cameraOffered(btn.dataset.camera)) btn.remove();
   const modeButtons = document.querySelectorAll('[data-mode]');
   const cameraButtons = document.querySelectorAll('[data-camera]');
   const timeButtons = document.querySelectorAll('[data-time]');
