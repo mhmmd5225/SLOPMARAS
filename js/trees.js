@@ -424,6 +424,29 @@ const SPECIES = [
     tints: [0x44622a, 0x53702e, 0x3a5724]
   }
 ];
+// Tropical evergreens for the cities near the equator (open-city-details.js), grown from the species above: crowns twice
+// as dense with larger sprays, in deeper greens
+const tropical = (base, name, over) => ({ ...base, name, ...over, cards: { ...base.cards, perTwig: 4, scale: [1.1, 1.45] } });
+SPECIES.push(
+  // 3: Rain tree (and the other big legumes: angsana, yellow flame): short trunk under long, near-level limbs, a broad
+  //    umbrella
+  tropical(SPECIES[1], 'raintree', {
+    tile: 0, // the plane's broad sprays: the locust's fine fronds read as bare branches from across a road
+    trunk: { r: 0.32, top: 4.2, lean: 0.05, segs: 7 },
+    limbs: { n: 6, y: [2.8, 4.2], tilt: [1.2, 0.85], len: [6.4, 4.8], r: 0.62, up: 0.05, out: 0.02, droop: 0, jitter: 0.12, segs: 6 },
+    twigs: { ...SPECIES[1].twigs, n: 4 },
+    tints: [0x3f6322, 0x4a6e27, 0x36561d]
+  }),
+  // 4: Evergreen: a dense rounded crown on a clear trunk (the Syzygiums, sapodillas, mahoganies and most street trees)
+  tropical(SPECIES[0], 'evergreen', {
+    twigs: { ...SPECIES[0].twigs, n: 4 },
+    tints: [0x2f5520, 0x3b6326, 0x2a4b1c]
+  }),
+  // 5: Weeping: the elm's arching vase, densely leaved (crape myrtles, trumpet trees)
+  tropical(SPECIES[2], 'weeping', {
+    tints: [0x3b6124, 0x48702b, 0x33561f]
+  })
+);
 
 // =====================================================================================================================
 // 3. SKELETON
@@ -823,8 +846,8 @@ function hashPos(x, y, z) {
 }
 
 /**
- * Builds the instanced tree field for `sites` ({ x, y, z, scale, species, yaw?, sx?, sz?, tier? }) and keeps each
- * tree's level of detail up to date from the camera of every view pass (scene.onBeforeRender). Returns
+ * Builds the instanced tree field for `sites` ({ x, y, z, scale or height (m), species, yaw?, sx?, sz?, tier? }) and
+ * keeps each tree's level of detail up to date from the camera of every view pass (scene.onBeforeRender). Returns
  * { group, material, atlas, update(cameraPosition) }.
  */
 function createTreeField(scene, sites) {
@@ -833,8 +856,16 @@ function createTreeField(scene, sites) {
   const atlas = createLeafAtlas();
   const material = createTreeMaterial(atlas.texture);
 
-  // Geometries: [species][variant][lod]
-  const geos = SPECIES.map((_, s) => [0, 1].map((v) => buildTreeGeometries(s, v, atlas.tileMeters)));
+  // Geometries: [species][variant][lod], for the species planted
+  const speciesOf = (t) => Math.min(SPECIES.length - 1, Math.max(0, t.species || 0));
+  const planted = new Set(sites.map(speciesOf));
+  const geos = SPECIES.map((_, s) => (planted.has(s) ? [0, 1].map((v) => buildTreeGeometries(s, v, atlas.tileMeters)) : null));
+  // Each species' height at scale 1 (its first variant up close): a site's height in metres sets its scale
+  const speciesHeight = geos.map((g) => {
+    if (!g) return 0;
+    if (!g[0][0].boundingBox) g[0][0].computeBoundingBox();
+    return g[0][0].boundingBox.max.y;
+  });
 
   // Per-tree transform & data
   const N = sites.length;
@@ -858,7 +889,7 @@ function createTreeField(scene, sites) {
     types.push(type);
     return type;
   };
-  const meshIndex = SPECIES.map((sp, s) => ({
+  const meshIndex = SPECIES.map((sp, s) => geos[s] && ({
     l0: [0, 1].map((v) => makeType(geos[s][v][0], `Trees_${sp.name}_v${v}_lod0`)),
     l1: [0, 1].map((v) => makeType(geos[s][v][1], `Trees_${sp.name}_v${v}_lod1`)),
     l2: makeType(geos[s][0][2], `Trees_${sp.name}_lod2`)
@@ -870,12 +901,12 @@ function createTreeField(scene, sites) {
   const dummy = new THREE.Object3D();
   const tint = new THREE.Color();
   sites.forEach((t, i) => {
-    const sp = Math.min(SPECIES.length - 1, Math.max(0, t.species || 0));
+    const sp = speciesOf(t);
     const r1 = hashPos(t.x, 1.3, t.z);
     const r2 = hashPos(t.z, 7.1, t.x);
     const r3 = hashPos(t.x + t.z, 3.3, 0.7);
     const variant = hashPos(t.x, 5.9, t.z) < 0.5 ? 0 : 1;
-    const s = t.scale * (0.9 + r1 * 0.2);
+    const s = (t.height ? t.height / speciesHeight[sp] : t.scale) * (0.9 + r1 * 0.2);
     dummy.position.set(t.x, t.y || 0, t.z);
     dummy.rotation.set(0, t.yaw ?? r2 * Math.PI * 2, 0);
     dummy.scale.set(s * (0.9 + r3 * 0.2) * (t.sx || 1), s * (0.88 + r1 * 0.24), s * (0.9 + r2 * 0.2) * (t.sz || 1));
@@ -1036,8 +1067,8 @@ function createTreeField(scene, sites) {
 
   const stats = {
     trees: N,
-    triangles: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.triangles))),
-    cards: geos.map((v) => v.map((l) => l.map((g) => g && g.userData.cards)))
+    triangles: geos.map((v) => v && v.map((l) => l.map((g) => g && g.userData.triangles))),
+    cards: geos.map((v) => v && v.map((l) => l.map((g) => g && g.userData.cards)))
   };
   return { group, material, atlas, update, meshes: instanced, stats };
 }

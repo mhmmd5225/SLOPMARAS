@@ -45,6 +45,16 @@ export default {
     { id: 'littleindia', name: 'Little India', sub: 'Rochor', at: [1.3066, 103.8518] },
     { id: 'kampongglam', name: 'Kampong Glam', sub: 'Rochor', at: [1.3023, 103.8590] }
   ],
+  // Trees: NParks' inventory (Trees.sg © National Parks Board) as collected by cheeaun/sgtreesdata, each tree at its
+  // place with its estimated height; its family picks the crown's shape (js/trees.js), the rest are `shape`
+  trees: {
+    source: 'sgtreesdata',
+    url: 'https://raw.githubusercontent.com/cheeaun/sgtreesdata/master/data/trees.csv',
+    families: 'https://raw.githubusercontent.com/cheeaun/sgtreesdata/master/data/families-species.json',
+    credit: 'Trees.sg © National Parks Board, via cheeaun/sgtreesdata',
+    shape: 'evergreen',
+    shapes: { 'Fabaceae (Leguminosae)': 'raintree', Lythraceae: 'weeping', Bignoniaceae: 'weeping', 'Arecaceae (Palmae)': 'palm' }
+  },
   // Map labels: 0 regions, 1 waters, 2 neighbourhoods (the districts above are labelled too)
   labels: [
     { name: 'MARINA BAY', at: [1.2860, 103.8575], kind: 1 },

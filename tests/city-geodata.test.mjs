@@ -77,7 +77,7 @@ test('coastline land: land on the left of the coast, water on the right', () => 
   assert.equal(at(LON0, LAT0 - 0.004), 0);
 });
 
-test('a city builds from OSM layers: land, blocks with lots, parks and the road graph', { timeout: 120000 }, async () => {
+test('a city builds from OSM layers: land, blocks with lots, parks, the road graph and its trees', { timeout: 120000 }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'city geodata 島 '));
   try {
     const d = 0.003, r = 0.0035;
@@ -92,9 +92,16 @@ test('a city builds from OSM layers: land, blocks with lots, parks and the road 
     write('water', [way(50, [51, 52, 53, 54, 51], [[LON0 + w[0], LAT0 + w[0]], [LON0 + w[1], LAT0 + w[0]], [LON0 + w[1], LAT0 + w[1]], [LON0 + w[0], LAT0 + w[1]], [LON0 + w[0], LAT0 + w[0]]], { natural: 'water', name: 'Test Pond' })]);
     const p = [0.0003, 0.0029];
     write('parks', [way(40, [41, 42, 43, 44, 41], [[LON0 + p[0], LAT0 + p[0]], [LON0 + p[1], LAT0 + p[0]], [LON0 + p[1], LAT0 + p[1]], [LON0 + p[0], LAT0 + p[1]], [LON0 + p[0], LAT0 + p[0]]], { leisure: 'park', name: 'Test Park' })]);
+    // Trees at metres east (x) & south (z) of the crossing: in the sea, mid-carriageway on North Road (14.2 m wide), just
+    // inside its roadway by the kerb, in the north-east park, deep in the south-east block's lots, on its sidewalk
+    const ll = (x, z) => [LON0 + x / (111320 * Math.cos((LAT0 * Math.PI) / 180)), LAT0 - z / 110574];
+    const treeAt = { sea: [500, 0], road: [0, 200], kerb: [6.5, 200], park: [150, -150], lot: [160, 160], sidewalk: [9, 160] };
+    fs.writeFileSync(path.join(dir, 'trees.csv'), ['lng,lat,height,family', ...Object.entries(treeAt).map(([k, [x, z]], i) =>
+      `${ll(x, z).join(',')},${6 + i * 3},"${k === 'park' ? 'Fabaceae (Leguminosae)' : 'Myrtaceae'}"`)].join('\n') + '\n');
     const city = {
       id: 'testcity', name: 'Test City', origin: { lat: LAT0, lon: LON0, label: 'the crossing' }, bearing: 'auto',
-      detail: [LAT0 - 0.0032, LON0 - 0.0032, LAT0 + 0.0032, LON0 + 0.0032], margin: 0.001, sidewalk: 5, strip: 6, driveSide: 'left'
+      detail: [LAT0 - 0.0032, LON0 - 0.0032, LAT0 + 0.0032, LON0 + 0.0032], margin: 0.001, sidewalk: 5, strip: 6, driveSide: 'left',
+      trees: { credit: 'test', shapes: { 'Fabaceae (Leguminosae)': 'locust' } }
     };
     const out = path.join(dir, 'testcity-geodata.js');
     await buildCity(city, { out, data: dir });
@@ -120,6 +127,16 @@ test('a city builds from OSM layers: land, blocks with lots, parks and the road 
     assert.equal(ns.length, 2);
     assert.ok(ns.every((l) => l[4] === 4 && l[5] === 0 && RG.classes[l[7]] === 'primary' && l[8] === 0));
     assert.ok(ew.every((l) => l[5] === 1 && RG.nodes[l[1] * 2] > RG.nodes[l[0] * 2]), 'one-way eastbound along its links');
+    // trees: the park's, the sidewalk's and the kerbside one (moved off the roadway) stand; the rest don't
+    assert.deepEqual(GEO.trees.shapes, ['plane', 'locust']);
+    const planted = [];
+    for (let i = 0; i < GEO.trees.data.length; i += 4) planted.push(GEO.trees.data.slice(i, i + 4));
+    assert.equal(planted.length, 3, JSON.stringify(planted));
+    const near = ([x, z], r) => planted.find((t) => Math.hypot(t[0] / 10 - x, t[1] / 10 - z) < r);
+    assert.equal(near(treeAt.park, 1)[3], 1, 'a legume grows as a locust');
+    assert.ok(near(treeAt.sidewalk, 1));
+    const kerb = near(treeAt.kerb, 3);
+    assert.ok(kerb && kerb[0] / 10 > 7.1, 'the kerbside tree moved out of the roadway');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

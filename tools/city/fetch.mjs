@@ -1,4 +1,5 @@
-// tools/city/fetch.mjs — downloads a city's OpenStreetMap layers from Overpass (tools/overpass.sh) into tools/data/<city>/
+// tools/city/fetch.mjs — downloads a city's OpenStreetMap layers from Overpass (tools/overpass.sh), and its trees where
+// its config names a tree inventory, into tools/data/<city>/
 // usage: node tools/city/fetch.mjs <city> [--force]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +21,34 @@ export function queries(city) {
   };
 }
 
+// The city's trees inside its detail box grown by its margin, as CSV: lng, lat, height (m), family. From
+// cheeaun/sgtreesdata's trees.csv (id, tree_id, species_id, girth, girth_size, height, height_est, age, lng, lat) and its
+// families-species.json ({ family: [species ids] })
+export async function fetchTrees(city) {
+  if (city.trees.source !== 'sgtreesdata') throw new Error(`unknown tree source ${city.trees.source}`);
+  const get = async (url) => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+    return r.text();
+  };
+  const familyOf = new Map();
+  for (const [family, ids] of Object.entries(JSON.parse(await get(city.trees.families)))) for (const id of ids) familyOf.set(String(id), family);
+  const [s, w, n, e] = city.detail;
+  const m = city.margin;
+  const lines = (await get(city.trees.url)).split('\n');
+  const col = Object.fromEntries(lines[0].split(',').map((k, i) => [k.trim(), i]));
+  const out = ['lng,lat,height,family'];
+  for (let i = 1; i < lines.length; i++) {
+    const f = lines[i].split(',');
+    const lng = parseFloat(f[col.lng]), lat = parseFloat(f[col.lat]);
+    if (!(lat > s - m && lat < n + m && lng > w - m && lng < e + m)) continue;
+    const family = (familyOf.get(f[col.species_id]) || '').replace(/"/g, '');
+    out.push(`${lng},${lat},${parseFloat(f[col.height_est]) || 0},"${family}"`);
+  }
+  if (out.length < 2) throw new Error('no trees inside the box');
+  return out.join('\n') + '\n';
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const city = await loadCity(process.argv[2]);
   const force = process.argv.includes('--force');
@@ -27,6 +56,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   fs.mkdirSync(dir, { recursive: true });
   const overpass = fileURLToPath(new URL('../overpass.sh', import.meta.url));
   let failed = 0;
+  if (city.trees) {
+    const out = path.join(dir, 'trees.csv');
+    if (fs.existsSync(out) && !force) console.log(`[fetch] trees: have ${out}`);
+    else {
+      console.log(`[fetch] trees from ${city.trees.url} ...`);
+      try { fs.writeFileSync(out, await fetchTrees(city)); console.log(`[fetch] trees: wrote ${out}`); } catch (e) { console.error(`[fetch] trees: ${e.message}`); failed++; }
+    }
+  }
   for (const [layer, ql] of Object.entries(queries(city))) {
     const q = path.join(dir, `q_${layer}.overpassql`);
     const out = path.join(dir, `osm_${layer}.json`);

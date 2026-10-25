@@ -1,5 +1,5 @@
 // tools/city/preview.mjs — renders a city's geodata (js/<city>-geodata.js) as a PNG map to check a build by eye:
-// water, land, parks, blocks with their lot rects (frontage-frame lots turned into place), the road graph by level
+// water, land, parks, blocks with their lot rects (frontage-frame lots turned into place), trees, the road graph by level
 // usage: node tools/city/preview.mjs <city> <out.png> [--mpp 4] [--crop x0,z0,x1,z1]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -103,7 +103,7 @@ function crc32(buf) {
 
 const C = {
   water: [156, 195, 224], land: [240, 236, 226], park: [185, 220, 160], block: [214, 208, 198], blockPark: [160, 205, 140],
-  lot: [178, 164, 150], frameLot: [190, 150, 130], road: [70, 70, 70], bridge: [200, 90, 40], tunnel: [150, 150, 210], detail: [220, 30, 30]
+  lot: [178, 164, 150], frameLot: [190, 150, 130], tree: [70, 140, 60], road: [70, 70, 70], bridge: [200, 90, 40], tunnel: [150, 150, 210], detail: [220, 30, 30]
 };
 
 export function renderPreview(GEO, { mpp = 4, crop } = {}) {
@@ -128,6 +128,10 @@ export function renderPreview(GEO, { mpp = 4, crop } = {}) {
       const toW = ([u, v]) => [px + (u - px) * cs + (v - pz) * sn, pz - (u - px) * sn + (v - pz) * cs];
       for (const [a, b, c, d] of rs) cv.polygon([[[a, c], [b, c], [b, d], [a, d]].map(toW)], C.frameLot);
     }
+  }
+  if (GEO.trees) {
+    const d = GEO.trees.data;
+    for (let i = 0; i < d.length; i += 4) cv.line([[d[i] / 10, d[i + 1] / 10], [d[i] / 10 + 0.1, d[i + 1] / 10]], Math.max(mpp * 1.2, d[i + 2] * 0.4), C.tree);
   }
   const RG = GEO.roadGraph;
   const node = (i) => [RG.nodes[i * 2], RG.nodes[i * 2 + 1]];

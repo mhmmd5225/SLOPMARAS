@@ -8,6 +8,7 @@ import { buildCityGrid } from './city-grid.js';
 import { buildLandmarks } from './landmarks.js';
 import { buildCityBlocks } from './buildings.js';
 import { buildStreetDetails } from './street-details.js';
+import { buildOpenCityDetails } from './open-city-details.js';
 import { createTrafficSystem, createHighwayTraffic } from './traffic.js';
 import { buildRoadPaint } from './road-paint.js';
 import { ThirdPersonControllerManager } from './controllers.js';
@@ -108,8 +109,8 @@ async function initApp() {
   }
 
   // 3. Build Manhattan Geography, Iconic Landmarks, Blocks, Street Details & Traffic. A city built from OpenStreetMap
-  //    (city-config.js CITY.open) has its ground, blocks and traffic, without New York's boroughs, landmarks & street
-  //    furniture
+  //    (city-config.js CITY.open) has its ground, blocks, trees and traffic, without New York's boroughs, landmarks &
+  //    street furniture
   const cityGrid = buildCityGrid(scene);
   markInit('cityGrid');
   const boroughs = CITY.open ? { colliders: [] } : (await import('./boroughs.js')).buildBoroughs(scene, { sidewalks: cityGrid.sidewalks });
@@ -120,9 +121,7 @@ async function initApp() {
   markInit('blocks');
   const allColliders = [...landmarkColliders, ...cityBlocks.colliders, ...boroughs.colliders, ...(cityGrid.colliders || [])];
 
-  const streetDetails = CITY.open
-    ? { footprints: [], signalClock: { value: 0 }, audioSignals: [], update: null }
-    : buildStreetDetails(scene);
+  const streetDetails = CITY.open ? buildOpenCityDetails(scene) : buildStreetDetails(scene);
   markInit('streetDetails');
   // Buildings turned along non-grid streets have oriented colliders whose world bounds reach past their lots: they stay
   // inside the property line anyway, so the road network (lanes & sidewalks) doesn't need them.

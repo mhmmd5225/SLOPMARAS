@@ -14,6 +14,7 @@
 //   blocks      as js/nyc-geodata.js: [outline, lot rects, park share, park name, rectangular, frontage frames | 0]
 //   districts   [{ name, style, x, z, r }] building styles by neighbourhood (nearest centre within r), places [{ id, name,
 //               sub, x, z }] teleport destinations & landmarks, labels [{ name, x, z, kind }] map labels (the config's)
+//   trees       { shapes, credit, data: [x dm, z dm, height m, shape index, ...] } the city's trees (or null)
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -166,6 +167,67 @@ export async function buildCity(cityOrId, { out, data } = {}) {
   const roadGraph = { ...g.build(), classes: GRAPH_CLASSES };
   log(`road graph: ${roadGraph.nodes.length / 2} nodes, ${roadGraph.links.length} links (${waterBridges} bridges over water at grade)`);
 
+  // --- Trees (where the config names an inventory: tools/city/fetch.mjs) ------------------------------------------------
+  // Each at its place with its height and crown shape, but none in the water, on a carriageway or on a building lot (the
+  // buildings fill them). A kerbside tree the estimated roadway widths reach over moves up to 3 m onto the sidewalk.
+  let trees = null;
+  const treesFile = path.join(dir, 'trees.csv');
+  if (city.trees && fs.existsSync(treesFile)) {
+    const base = city.trees.shape || 'plane';
+    const shapes = [...new Set([base, ...Object.values(city.trees.shapes || {})])];
+    const shapeOf = (family) => shapes.indexOf((city.trees.shapes || {})[family] || base);
+    const byLabel = new Map(all.map((b) => [b.label, b]));
+    const cellOf = (x, z) => {
+      const i = Math.floor((x - R.x0) / R.res), j = Math.floor((z - R.z0) / R.res);
+      return i >= 0 && j >= 0 && i < R.w && j < R.h ? j * R.w + i : -1;
+    };
+    const buildableAt = (x, z) => buildable[Math.floor((z - land.z0) / land.res) * land.w + Math.floor((x - land.x0) / land.res)];
+    const onLot = (b, x, z) => {
+      for (const [th, px, pz, rects] of b.frames || [[0, 0, 0, b.rects]]) {
+        const cs = Math.cos(th), sn = Math.sin(th);
+        const dx = x - px, dz = z - pz;
+        const u = th ? px + dx * cs - dz * sn : x, v = th ? pz + dx * sn + dz * cs : z; // R_y(-θ) into the frame
+        for (const [x0, x1, z0, z1] of rects) if (u > x0 && u < x1 && v > z0 && v < z1) return true;
+      }
+      return false;
+    };
+    // The nearest block cell within 3 m of (x, z), as its centre, or null
+    const RINGS = [];
+    for (let dj = -3; dj <= 3; dj++) for (let di = -3; di <= 3; di++) if (di * di + dj * dj <= 9) RINGS.push([di, dj, di * di + dj * dj]);
+    RINGS.sort((a, b) => a[2] - b[2]);
+    const nearestBlockCell = (x, z) => {
+      const i = Math.floor((x - R.x0) / R.res), j = Math.floor((z - R.z0) / R.res);
+      for (const [di, dj] of RINGS) {
+        const ii = i + di, jj = j + dj;
+        if (ii >= 0 && jj >= 0 && ii < R.w && jj < R.h && R.d[jj * R.w + ii]) return [R.x0 + (ii + 0.5) * R.res, R.z0 + (jj + 0.5) * R.res];
+      }
+      return null;
+    };
+    const data = [];
+    const dropped = { water: 0, road: 0, lot: 0 };
+    let moved = 0;
+    const rows = fs.readFileSync(treesFile, 'utf8').trim().split('\n').slice(1);
+    for (const row of rows) {
+      const [lng, lat, height, family] = row.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+      let [x, z] = toWorld(parseFloat(lng), parseFloat(lat));
+      if (!landAt(x, z)) { dropped.water++; continue; }
+      let k = cellOf(x, z);
+      if (k < 0) { dropped.water++; continue; }
+      if (buildableAt(x, z) && !R.d[k]) { // buildable land the roads took
+        const kerb = nearestBlockCell(x, z);
+        if (!kerb) { dropped.road++; continue; }
+        [x, z] = kerb;
+        k = cellOf(x, z);
+        moved++;
+      }
+      const b = byLabel.get(lab[k]);
+      if (b && !(b.park > 0.6) && pointInRing(...centroid(b.poly), detail) && onLot(b, x, z)) { dropped.lot++; continue; }
+      data.push(Math.round(x * 10), Math.round(z * 10), Math.max(3, Math.round(parseFloat(height) || 0)), shapeOf(family.replace(/"/g, '')));
+    }
+    trees = { shapes, credit: city.trees.credit, data };
+    log(`${data.length / 4} trees planted of ${rows.length} (${moved} moved off the roadway onto the kerb; ${dropped.water} in the water or beyond the map, ${dropped.road} on carriageways, ${dropped.lot} on building lots)`);
+  }
+
   // --- Neighbourhoods, places & labels from the config, in the world frame ---------------------------------------------
   const at = ([lat, lon]) => toWorld(lon, lat).map(q);
   const districts = (city.districts || []).map((d) => { const [x, z] = at(d.at); return { name: d.name, style: d.style, x, z, r: d.r }; });
@@ -188,7 +250,8 @@ export async function buildCity(cityOrId, { out, data } = {}) {
       b.frames ? b.frames.map(([th, px, pz, rs]) => [Math.round(th * 1e4) / 1e4, q(px), q(pz), rs.map((r) => r.map(q))]) : 0]),
     districts,
     places,
-    labels
+    labels,
+    trees
   };
   const file = out || fileURLToPath(new URL(`../../js/${city.id}-geodata.js`, import.meta.url));
   const header = `// js/${city.id}-geodata.js — GENERATED by tools/city/build.mjs ${city.id}, do not edit by hand.

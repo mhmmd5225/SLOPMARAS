@@ -34,4 +34,4 @@ New York (`?city=nyc`) has its own data build from NYC Open Data: `node --max-ol
 
 The project code is available under the [MIT License](LICENSE).
 
-Geographic data: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL); New York's also NYC Open Data. Third-party data and dependencies retain their respective licenses.
+Geographic data: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL); New York's also NYC Open Data. Singapore's trees: [Trees.sg](https://www.nparks.gov.sg/treessg) © National Parks Board, collected by [cheeaun/sgtreesdata](https://github.com/cheeaun/sgtreesdata). Third-party data and dependencies retain their respective licenses.
