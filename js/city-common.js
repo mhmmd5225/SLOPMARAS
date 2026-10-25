@@ -149,4 +149,39 @@ function walkSignal(time, isAvenue) {
   return t < walk;
 }
 
-export { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal };
+// ---------------------------------------------------------------------------------------------------------------------
+// Vehicle liveries (CITY.vehicles): New York's, which a city's config may override part by part (GEO.vehicles)
+//   taxis: the taxi fleet's paints (repeat one to make it commoner); taxiBadge: the door badge's plate (null: the
+//   lettering straight on the paint), taxiLettering, taxiMedallion: the medallion number on the rear quarter;
+//   plate: front plate colour & the rear plates' atlas (bg, ink, labels); playerTaxi: the player's taxi's door decal
+//   & plates; bus: livery & destination sign; labels: the HUD's names for the player's car & bicycle
+// ---------------------------------------------------------------------------------------------------------------------
+const NYC_VEHICLES = {
+  taxis: [0xffbe14],
+  taxiBadge: 0x121417,
+  taxiLettering: 0xffbe14,
+  taxiMedallion: true,
+  plate: { front: 0xf2b718, bg: '#f2b718', ink: '#17212c', labels: ['4KM 728', '7TR 319', '2BJ 506', '6XL 842'] },
+  playerTaxi: {
+    door: { bg: '#ffbe14', ink: '#111317', emblem: 'T', title: 'NYC TAXI', lines: ['7Y48 · MEDALLION', '$3.00 INITIAL FARE'] },
+    plate: { bg: '#ffb81c', band: '#0d2244', ink: '#0d2244', top: 'NEW YORK', number: '7Y48A', bottom: 'NYC T&LC' }
+  },
+  bus: { body: 0xf0f4f8, stripe: 0x0058b8, ribbon: 0x00a8e8, skirt: 0x1c2026, route: 'M1', routeBadge: '#0058b8', destination: '5 AV / HARLEM' },
+  labels: { car: 'NYC Yellow Taxi', cyclist: 'NYC Bike Lane Cyclist' }
+};
+function vehiclesFor(overrides = {}) {
+  const o = overrides || {};
+  return {
+    ...NYC_VEHICLES,
+    ...o,
+    plate: { ...NYC_VEHICLES.plate, ...o.plate },
+    playerTaxi: {
+      door: { ...NYC_VEHICLES.playerTaxi.door, ...(o.playerTaxi || {}).door },
+      plate: { ...NYC_VEHICLES.playerTaxi.plate, ...(o.playerTaxi || {}).plate }
+    },
+    bus: { ...NYC_VEHICLES.bus, ...o.bus },
+    labels: { ...NYC_VEHICLES.labels, ...o.labels }
+  };
+}
+
+export { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal, NYC_VEHICLES, vehiclesFor };

@@ -5,7 +5,8 @@ import {
   getIslandBoundsAtZ,
   isTypingInField,
   blockAt,
-  streetZ
+  streetZ,
+  CITY
 } from './city-config.js';
 import { cityUniforms, createCarPaintMaterial, createContactShadowMaterial } from './tsl-materials.js';
 import {
@@ -129,55 +130,64 @@ function buildingContact(c, x, y, z, body, contact) {
   return true;
 }
 
-function createTaxiDoorDecalTexture() {
+// The player's taxi's door decal (`door`: CITY.vehicles.playerTaxi.door; New York's T&LC emblem, NYC TAXI & fare)
+function createTaxiDoorDecalTexture(door) {
   const c = document.createElement('canvas');
   c.width = 256;
   c.height = 128;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#ffbe14';
+  ctx.fillStyle = door.bg;
   ctx.fillRect(0, 0, 256, 128);
-  // Black T&LC circle emblem
-  ctx.fillStyle = '#111317';
-  ctx.beginPath();
-  ctx.arc(58, 64, 42, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ffbe14';
-  ctx.font = '900 32px Inter, Arial, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('T', 58, 66);
-  // NYC TAXI typography & Fare Rate
-  ctx.fillStyle = '#111317';
+  const x = door.emblem ? 112 : 20;
+  if (door.emblem) {
+    // circle emblem
+    ctx.fillStyle = door.ink;
+    ctx.beginPath();
+    ctx.arc(58, 64, 42, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = door.bg;
+    ctx.font = '900 32px Inter, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(door.emblem, 58, 66);
+  }
+  ctx.fillStyle = door.ink;
   ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
   ctx.font = '900 26px Inter, Arial, sans-serif';
-  ctx.fillText('NYC TAXI', 112, 42);
+  ctx.fillText(door.title, x, 42);
   ctx.font = '700 15px JetBrains Mono, monospace';
-  ctx.fillText('7Y48 · MEDALLION', 112, 68);
+  ctx.fillText(door.lines[0] || '', x, 68);
   ctx.font = '600 13px Inter, Arial, sans-serif';
-  ctx.fillText('$3.00 INITIAL FARE', 112, 90);
+  ctx.fillText(door.lines[1] || '', x, 90);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
 
-function createNYLicensePlateTexture() {
+// The player's taxi's plates (`plate`: CITY.vehicles.playerTaxi.plate; New York's: NEW YORK on a band, T&LC below)
+function createLicensePlateTexture(plate) {
   const c = document.createElement('canvas');
   c.width = 256;
   c.height = 128;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#ffb81c';
+  ctx.fillStyle = plate.bg;
   ctx.fillRect(0, 0, 256, 128);
-  ctx.fillStyle = '#0d2244';
-  ctx.fillRect(6, 6, 244, 24);
-  ctx.fillStyle = '#ffb81c';
-  ctx.font = '800 15px Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('NEW YORK', 128, 23);
-  ctx.fillStyle = '#0d2244';
-  ctx.font = '900 48px JetBrains Mono, monospace';
-  ctx.fillText('7Y48A', 128, 82);
-  ctx.font = '700 13px Inter, Arial, sans-serif';
-  ctx.fillText('NYC T&LC', 128, 114);
+  if (plate.top) {
+    ctx.fillStyle = plate.band;
+    ctx.fillRect(6, 6, 244, 24);
+    ctx.fillStyle = plate.bg;
+    ctx.font = '800 15px Inter, Arial, sans-serif';
+    ctx.fillText(plate.top, 128, 23);
+  }
+  ctx.fillStyle = plate.ink;
+  ctx.font = `900 ${plate.number.length > 7 ? 36 : 48}px JetBrains Mono, monospace`;
+  ctx.fillText(plate.number, 128, plate.top ? 82 : 78);
+  if (plate.bottom) {
+    ctx.font = '700 13px Inter, Arial, sans-serif';
+    ctx.fillText(plate.bottom, 128, 114);
+  }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -477,7 +487,8 @@ class ThirdPersonControllerManager {
     root.add(chassisPivot);
 
     const spec = BODY_SPECS.taxi;
-    const taxiLoftMat = createLoftedCarMaterial(spec, 0xffbe14);
+    const V = CITY.vehicles;
+    const taxiLoftMat = createLoftedCarMaterial(spec, V.taxis[0], V);
 
     // 1. 3D Lofted Taxi Body + Curved Windscreens + Crowned Roof + Side Mirrors + Roof Sign
     const carBodyGeo = buildCarGeometry(spec, false);
@@ -487,7 +498,7 @@ class ThirdPersonControllerManager {
     chassisPivot.add(carBodyMesh);
 
     // 2. Authentic NYC Taxi Side Door T&LC Medallion & Fare Tariff Emblem Decals, hugging the curved front doors
-    const doorDecalTex = createTaxiDoorDecalTexture();
+    const doorDecalTex = createTaxiDoorDecalTexture(V.playerTaxi.door);
     const doorDecalMat = new THREE.MeshStandardNodeMaterial({
       map: doorDecalTex,
       roughness: 0.24,
@@ -503,7 +514,7 @@ class ThirdPersonControllerManager {
     }
 
     // 3. High-Detail NY Empire Gold License Plates on the bumpers
-    const nyPlateTex = createNYLicensePlateTexture();
+    const nyPlateTex = createLicensePlateTexture(V.playerTaxi.plate);
     const nyPlateMat = new THREE.MeshStandardNodeMaterial({ map: nyPlateTex, roughness: 0.28 });
     const rearPlate = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.14, 0.02), nyPlateMat);
     rearPlate.position.set(0, spec.plates[1], spec.zRear - 0.006);
@@ -558,7 +569,7 @@ class ThirdPersonControllerManager {
 
     return {
       type: 'car',
-      label: 'NYC Yellow Taxi',
+      label: CITY.vehicles.labels.car,
       mesh: root,
       chassisPivot,
       carState,
@@ -719,7 +730,7 @@ class ThirdPersonControllerManager {
 
     return {
       type: 'cyclist',
-      label: 'NYC Bike Lane Cyclist',
+      label: CITY.vehicles.labels.cyclist,
       mesh: root,
       leanPivot,
       frontWheel,

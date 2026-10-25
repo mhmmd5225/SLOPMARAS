@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { cityUniforms } from './tsl-materials.js';
+import { NYC_VEHICLES } from './city-common.js';
 import {
   Fn,
   float,
@@ -968,37 +969,42 @@ const coverage = (d) => {
 };
 
 const _carMaterialCache = new Map();
-let _carPlateTexture;
+const _carPlateTextures = new Map();
 
-// One small generated atlas serves every rear plate, with mipmaps for distant traffic.
-function carPlateTexture() {
-  if (_carPlateTexture) return _carPlateTexture;
+// One small generated atlas serves every rear plate, with mipmaps for distant traffic: four plates (`plate`: the city's
+// plate colours & numbers, CITY.vehicles.plate)
+function carPlateTexture(plate = NYC_VEHICLES.plate) {
+  const key = `${plate.bg}_${plate.ink}_${plate.labels.join('|')}`;
+  if (_carPlateTextures.has(key)) return _carPlateTextures.get(key);
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 256;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#f2b718';
+  ctx.fillStyle = plate.bg;
   ctx.fillRect(0, 0, 128, 256);
-  ctx.fillStyle = '#17212c';
-  ctx.font = 'bold 25px monospace';
+  ctx.fillStyle = plate.ink;
+  const longest = Math.max(...plate.labels.map((l) => l.length));
+  ctx.font = `bold ${Math.min(25, Math.floor(200 / longest))}px monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ['4KM 728', '7TR 319', '2BJ 506', '6XL 842'].forEach((label, row) => ctx.fillText(label, 64, row * 64 + 33));
-  _carPlateTexture = new THREE.CanvasTexture(canvas);
-  _carPlateTexture.colorSpace = THREE.SRGBColorSpace;
-  return _carPlateTexture;
+  plate.labels.slice(0, 4).forEach((label, row) => ctx.fillText(label, 64, row * 64 + 33));
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  _carPlateTextures.set(key, tex);
+  return tex;
 }
 
 /**
  * Creates the TSL material for lofted vehicles.
  * Instanced traffic reads the per-instance `paintColor` (vec3) and `carState` (vec4: brake, left (+x) & right (-x)
  * turn signal, livery: 1 = NYPD) attributes; with a fixed `fixedColorHex` (the player's taxi, wheels) the state is the
- * `material.userData.carState` uniform instead.
+ * `material.userData.carState` uniform instead. `livery`: the city's taxi badges & plates (CITY.vehicles).
  * Every mask is built once and shared by the colour, roughness, metalness & emissive graphs (TSL turns nodes used
  * more than once into temporaries), so the fragment shader evaluates each SDF a single time.
  */
-function createLoftedCarMaterial(spec, fixedColorHex = null) {
-  const cacheKey = `${spec.name}_${fixedColorHex ?? 'instanced'}`;
+function createLoftedCarMaterial(spec, fixedColorHex = null, livery = NYC_VEHICLES) {
+  const liveryKey = `${livery.taxiBadge}_${livery.taxiLettering}_${livery.taxiMedallion}_${livery.plate.front}_${livery.plate.labels.join('|')}`;
+  const cacheKey = `${spec.name}_${fixedColorHex ?? 'instanced'}_${liveryKey}`;
   if (_carMaterialCache.has(cacheKey)) {
     return _carMaterialCache.get(cacheKey);
   }
@@ -1194,8 +1200,9 @@ function createLoftedCarMaterial(spec, fixedColorHex = null) {
       .mul(smoothstep(0.016, 0.013, abs(p.y.sub(0.8))))
       .mul(isSide)
       .mul(isBody);
-    painted = mix(mix(painted, color(0x121417), badge), color(0xffbe14), max(emblem, letters).mul(badge));
-    painted = mix(painted, color(0x121417), medallion);
+    if (livery.taxiBadge !== null) painted = mix(painted, color(livery.taxiBadge), badge);
+    painted = mix(painted, color(livery.taxiLettering), max(emblem, letters).mul(badge));
+    if (livery.taxiMedallion) painted = mix(painted, color(0x121417), medallion);
   }
 
   // Panel shading: soft occlusion low down & under the arch lips; unpainted cladding (SUVs); door shut lines &
@@ -1230,10 +1237,10 @@ function createLoftedCarMaterial(spec, fixedColorHex = null) {
   body = mix(body, body.mul(pocketShade), platePocket);
   body = mix(body, color(0x303438), trunkHandle);
   body = mix(body, color(0x24292d), plateRecess);
-  body = mix(body, color(0xf2b718), plates);
+  body = mix(body, color(livery.plate.front), plates);
   const plateVariant = floor(fract(paint.r.mul(7).add(paint.g.mul(13)).add(paint.b.mul(17))).mul(4));
   const plateUV = vec2(p.x.div(-0.31).add(0.5), p.y.sub(plateR).div(0.12).add(0.5));
-  const plateColor = texture(carPlateTexture(), vec2(plateUV.x, plateUV.y.add(plateVariant).div(4))).rgb;
+  const plateColor = texture(carPlateTexture(livery.plate), vec2(plateUV.x, plateUV.y.add(plateVariant).div(4))).rgb;
   body = mix(body, plateColor, plateRear);
   body = mix(body, color(0x0e1013), under);
 
@@ -1502,7 +1509,7 @@ function createBusWheelMaterial() {
   return mat;
 }
 
-let _busLoftedMat = null;
+const _busLoftedMats = new Map();
 
 /**
  * Creates the TSL procedural material for MTA buses:
@@ -1513,8 +1520,10 @@ let _busLoftedMat = null;
  * - Headlamps, turn signals (per-instance `busState`: brake, left (+x), right (-x)), tail / brake light columns,
  *   NY plates; black trims & light-grey roof pods
  */
-function createLoftedBusMaterial() {
-  if (_busLoftedMat) return _busLoftedMat;
+// `bus`: the city's bus livery (CITY.vehicles.bus)
+function createLoftedBusMaterial(bus = NYC_VEHICLES.bus) {
+  const key = `${bus.body}_${bus.stripe}_${bus.ribbon}_${bus.skirt}`;
+  if (_busLoftedMats.has(key)) return _busLoftedMats.get(key);
   const s = BUS_SPEC;
   const p = attribute('position', 'vec3');
   const n = attribute('normal', 'vec3');
@@ -1561,12 +1570,12 @@ function createLoftedBusMaterial() {
   const glass = clamp(max(max(frontGlass, rearGlass), max(max(sideBand.mul(mullion), driverWin), max(d0.glass, d1.glass))), 0.0, 1.0);
   const seal = clamp(max(max(frontSeal, rearSeal), max(max(sideSeal, signBand), doorFrame)), 0.0, 1.0);
 
-  // MTA livery
+  // Livery (New York's MTA: white with a blue stripe & cyan ribbon above a dark skirt)
   const shadeY = smoothstep(0.34, 1.2, p.y).mul(0.2).add(0.8);
   const blueStripe = smoothstep(0.9, 0.93, p.y).mul(smoothstep(1.2, 1.17, p.y));
   const cyanRibbon = smoothstep(0.84, 0.86, p.y).mul(smoothstep(0.885, 0.865, p.y));
   const skirt = smoothstep(0.53, 0.5, p.y);
-  const livery = mix(mix(mix(color(0xf0f4f8), color(0x0058b8), blueStripe), color(0x00a8e8), cyanRibbon), color(0x1c2026), skirt).mul(shadeY);
+  const livery = mix(mix(mix(color(bus.body), color(bus.stripe), blueStripe), color(bus.ribbon), cyanRibbon), color(bus.skirt), skirt).mul(shadeY);
 
   // Lamps: twin round headlamps & amber turn signals in black pods; red tail / brake light columns, amber turn &
   // white reverse lamps at the rear corners; plates
@@ -1609,7 +1618,7 @@ function createLoftedBusMaterial() {
     .add(color(0xff9a14).mul(max(turnFront, turnRear).mul(blink).mul(2.0)))
     .add(color(0xff0a12).mul(tailLamp.mul(brake.mul(1.5).add(0.75))));
 
-  _busLoftedMat = mat;
+  _busLoftedMats.set(key, mat);
   return mat;
 }
 

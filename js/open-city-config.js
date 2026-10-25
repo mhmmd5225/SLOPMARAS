@@ -1,5 +1,5 @@
 import { GEO } from './geodata.js';
-import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal } from './city-common.js';
+import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal, vehiclesFor } from './city-common.js';
 
 // js/open-city-config.js
 // A city built from OpenStreetMap (tools/city/build.mjs: js/<city>-geodata.js, version 2) behind the same interface as
@@ -8,7 +8,7 @@ import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField
 // Broadway, the piers, bridges, boroughs and landmarks), which the builders skip or do without.
 
 const F = GEO.frame;
-const CITY = { id: GEO.city, name: GEO.name, short: GEO.short, open: true, driveSide: F.driveSide || 'right' };
+const CITY = { id: GEO.city, name: GEO.name, short: GEO.short, open: true, driveSide: F.driveSide || 'right', vehicles: vehiclesFor(GEO.vehicles) };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Land: the land masses ({ outer, holes } outlines, [{ x, z }]) and the detailed area (blocks stand inside it)

@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { buildRoadNetwork } from './road-network.js';
 import { createPedestrianRoutes } from './pedestrian-routes.js';
-import { signalPhase, walkSignal, blockAt } from './city-config.js';
+import { signalPhase, walkSignal, blockAt, CITY } from './city-config.js';
 import { cityUniforms, createContactShadowMaterial, createCarFlareMaterial } from './tsl-materials.js';
 import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './vehicle-lights.js';
 import {
@@ -49,24 +49,25 @@ const NEAR_RADIUS = 350;
 const VEHICLE_SPAWN_DISTANCE = 250;
 const PED_SPAWN_DISTANCE = 150;
 
-function createBusDestinationTexture() {
+// The bus's route badge & destination (`bus`: CITY.vehicles.bus)
+function createBusDestinationTexture(bus) {
   const c = document.createElement('canvas');
   c.width = 256;
   c.height = 64;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#0c0f14';
   ctx.fillRect(0, 0, 256, 64);
-  ctx.fillStyle = '#0058b8';
+  ctx.fillStyle = bus.routeBadge;
   ctx.fillRect(6, 8, 62, 48);
   ctx.fillStyle = '#ffffff';
   ctx.font = '900 26px Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('M1', 37, 33);
+  ctx.fillText(bus.route, 37, 33);
   ctx.fillStyle = '#ff9d1c';
-  ctx.font = '800 22px JetBrains Mono, monospace';
+  ctx.font = `800 ${bus.destination.length > 13 ? 18 : 22}px JetBrains Mono, monospace`;
   ctx.textAlign = 'left';
-  ctx.fillText('5 AV / HARLEM', 78, 33);
+  ctx.fillText(bus.destination, 78, 33);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -159,12 +160,13 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   const carWheelLeftGeo = buildSteerableWheelGeo(BODY_SPECS.sedan, -1);
   const carWheelRightGeo = buildSteerableWheelGeo(BODY_SPECS.sedan, 1);
 
-  const taxiMat = createLoftedCarMaterial(BODY_SPECS.taxi);
-  const sedanMat = createLoftedCarMaterial(BODY_SPECS.sedan);
-  const suvMat = createLoftedCarMaterial(BODY_SPECS.suv);
+  const V = CITY.vehicles; // the city's taxi fleet, plates & bus livery
+  const taxiMat = createLoftedCarMaterial(BODY_SPECS.taxi, null, V);
+  const sedanMat = createLoftedCarMaterial(BODY_SPECS.sedan, null, V);
+  const suvMat = createLoftedCarMaterial(BODY_SPECS.suv, null, V);
   const carWheelMat = createLoftedCarMaterial(BODY_SPECS.sedan, 0xffbe14);
 
-  const taxiYellow = new THREE.Color(0xffbe14);
+  const taxiFleet = V.taxis.map((hex) => new THREE.Color(hex));
   const policeWhite = new THREE.Color(0xf6f9fc);
   const sedanPalette = [
     new THREE.Color(0x1c2026), // Black Town Car / Uber
@@ -198,7 +200,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     if (isTaxi) {
       bodyType = 'taxi';
       taxiCount++;
-      col = taxiYellow;
+      col = taxiFleet[taxiCount % taxiFleet.length];
     } else if (isSUV) {
       bodyType = 'suv';
       suvCount++;
@@ -294,9 +296,9 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   // Destination signs above the windshield, by the front door & above the rear window
   const busHeaderGeo = buildBusSignGeometry();
 
-  const busBodyMat = createLoftedBusMaterial();
+  const busBodyMat = createLoftedBusMaterial(V.bus);
   const busDestMat = new THREE.MeshBasicNodeMaterial({
-    map: createBusDestinationTexture()
+    map: createBusDestinationTexture(V.bus)
   });
 
   const busWheelMat = createBusWheelMaterial();

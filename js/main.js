@@ -140,10 +140,6 @@ async function initApp() {
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
   const controllerManager = new ThirdPersonControllerManager(scene, allColliders);
-  if (CITY.open) {
-    controllerManager.entities.car.label = 'Taxi';
-    controllerManager.entities.cyclist.label = 'Cyclist';
-  }
   // Reuse teleport placement so saved players return at rest, close to their last positions. Each city keeps its own.
   const playerStateKey = CITY.open ? `${CITY.id}-player-state` : 'nyc-player-state';
   let restored = false;

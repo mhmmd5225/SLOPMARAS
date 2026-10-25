@@ -1,5 +1,5 @@
 import { GEO } from './nyc-geodata.js';
-import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal } from './city-common.js';
+import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal, NYC_VEHICLES } from './city-common.js';
 
 // js/nyc-config.js
 // New York City spatial configuration & street database at true 1:1 scale, derived from the real geography in
@@ -534,7 +534,7 @@ NYC_LANDMARKS.push(
 
 // The city (see open-city-config.js): its land masses as built here (the detailed island; the rest is boroughs.js's)
 // and where a session without a saved position starts (5th Ave at 37th St, as controllers.js places every mode)
-const CITY = { id: 'nyc', name: 'New York', short: 'NY', open: false, driveSide: 'right' };
+const CITY = { id: 'nyc', name: 'New York', short: 'NY', open: false, driveSide: 'right', vehicles: NYC_VEHICLES };
 const LAND_REGIONS = [{ outer: MANHATTAN_COASTLINE, holes: [] }];
 const DETAIL_POLYGON = MANHATTAN_COASTLINE;
 const WATER_BODIES = [];

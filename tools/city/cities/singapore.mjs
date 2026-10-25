@@ -55,6 +55,22 @@ export default {
     shape: 'evergreen',
     shapes: { 'Fabaceae (Leguminosae)': 'raintree', Lythraceae: 'weeping', Bignoniaceae: 'weeping', 'Arecaceae (Palmae)': 'palm' }
   },
+  // Vehicle liveries (js/city-common.js NYC_VEHICLES, overridden part by part): the taxi fleet (ComfortDelGro blue
+  // most, CityCab yellow, Trans-cab red, Premier silver) with lettering on the doors, Singapore plates, the green
+  // buses of the Land Transport Authority's livery
+  vehicles: {
+    taxis: [0x1f63c3, 0x1f63c3, 0x1f63c3, 0x1f63c3, 0x1f63c3, 0xf2c200, 0xf2c200, 0xc8102e, 0xc9cdd2],
+    taxiBadge: null,
+    taxiLettering: 0xffffff,
+    taxiMedallion: false,
+    plate: { front: 0xf4f4f0, bg: '#f4c51c', ink: '#111111', labels: ['SHA 4721 D', 'SKH 318 G', 'SLA 5062 K', 'SGX 842 Z'] },
+    playerTaxi: {
+      door: { bg: '#1f63c3', ink: '#ffffff', emblem: '', title: 'ComfortDelGro', lines: ['TAXI · 6552 1111', 'SHA 7948 A'] },
+      plate: { bg: '#f4c51c', ink: '#111111', top: '', number: 'SHA 7948A', bottom: '' }
+    },
+    bus: { body: 0x48a83a, stripe: 0x2e7d2a, ribbon: 0xcfe9c3, skirt: 0x1c2026, route: '36', routeBadge: '#1c1c1c', destination: 'CHANGI AIRPORT' },
+    labels: { car: 'Taxi', cyclist: 'Cyclist' }
+  },
   // Map labels: 0 regions, 1 waters, 2 neighbourhoods (the districts above are labelled too)
   labels: [
     { name: 'MARINA BAY', at: [1.2860, 103.8575], kind: 1 },
