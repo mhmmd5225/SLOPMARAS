@@ -43,6 +43,19 @@ export function areaRings(e, toWorld, minArea = 0) {
   return out;
 }
 
+// Polygons of an area element with their holes (a multipolygon's inner rings, in the outer ring containing them):
+// [{ outer, holes }], outer rings clockwise in (x, z) and holes the other way round
+export function areaPolygons(e, toWorld, minArea = 0) {
+  const polys = areaRings(e, toWorld, minArea).map((outer) => ({ outer, holes: [] }));
+  if (e.type !== 'relation' || !polys.length) return polys;
+  const inner = { ...e, members: (e.members || []).filter((m) => m.role === 'inner').map((m) => ({ ...m, role: 'outer' })) };
+  for (const ring of areaRings(inner, toWorld, 1)) {
+    const owner = polys.find((p) => pointInRing(ring[0][0], ring[0][1], p.outer));
+    if (owner) owner.holes.push(ring.reverse());
+  }
+  return polys;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Streets
 // ---------------------------------------------------------------------------------------------------------------------
@@ -56,7 +69,8 @@ export const VEHICLE_CLASSES = Object.keys(DEFAULT_LANES);
 const LANE = 3.3; // m per travel lane
 const GUTTERS = 1.0; // m of gutter & kerb edge across the carriageway
 
-const num = (v) => {
+// The number a tag starts with ("12.5 m" -> 12.5), or NaN
+export const num = (v) => {
   const m = /^\s*(\d+(?:\.\d+)?)/.exec(v || '');
   return m ? parseFloat(m[1]) : NaN;
 };

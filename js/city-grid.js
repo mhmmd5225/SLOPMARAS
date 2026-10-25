@@ -2571,8 +2571,8 @@ function buildCityGrid(scene) {
 
 /**
  * The ground of a city built from OpenStreetMap (open-city-config.js): the harbour water, each land mass as a seawall
- * slab under an asphalt deck at y = 0 with its rivers and lakes cut out, every block's raised sidewalk & curbs, and the
- * park blocks' lawns inside a sidewalk border. Same return value & live exports as buildCityGrid.
+ * slab under an asphalt deck at y = 0 with its rivers and lakes cut out, every block's raised sidewalk & curbs with a lawn
+ * inside, and decks for the bridges over water. Same return value & live exports as buildCityGrid.
  */
 function buildOpenCityGrid(scene) {
   const group = new THREE.Group();
@@ -2636,12 +2636,13 @@ function buildOpenCityGrid(scene) {
     group.add(deck);
   }
 
-  // Parks: lawn over the sidewalk slab, a walk's width in from the curb
+  // Lawn over the sidewalk slab: in parks a walk's width in from the curb, elsewhere inside the sidewalks (the ground the
+  // buildings and the trees stand on)
   const lawnMat = createParkLawnMaterial(false);
   const lawnGeos = [];
   for (const b of BLOCKS) {
-    if (!(b.park > 0.6) || b.median) continue;
-    const inner = offsetPolygonInward(b.poly, 3.0);
+    if (b.median) continue;
+    const inner = offsetPolygonInward(b.poly, b.park > 0.6 ? 3.0 : sidewalk);
     if (inner) lawnGeos.push(createFlatPolygonMesh(inner, 0.235, lawnMat).geometry);
   }
   for (let i = 0; i < lawnGeos.length; i += 400) {
@@ -2660,7 +2661,7 @@ function buildOpenCityGrid(scene) {
 
   batchStaticGroupMeshes(group, new Set([waterMat, roadMat, lawnMat]));
   scene.add(group);
-  console.info(`[cityGrid] ${CITY.name}: ${LAND_REGIONS.length} land masses, ${BLOCKS.length} blocks, ${lawnGeos.length} park lawns, ${deckGeos.length / 3} bridge deck segments`);
+  console.info(`[cityGrid] ${CITY.name}: ${LAND_REGIONS.length} land masses, ${BLOCKS.length} blocks, ${lawnGeos.length} lawns, ${deckGeos.length / 3} bridge deck segments`);
   return { group, sidewalks: roadSidewalks, footprints, highwayLanes: [], colliders: [] };
 }
 

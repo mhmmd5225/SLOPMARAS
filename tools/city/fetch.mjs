@@ -17,7 +17,8 @@ export function queries(city) {
     roads: `[out:json][timeout:240];way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|pedestrian)(_link)?$"]${bb};out geom;`,
     coast: `[out:json][timeout:180];way["natural"="coastline"]${bb};out geom;`,
     water: `[out:json][timeout:180];(${area('["natural"="water"]')}${area('["waterway"="riverbank"]')}${area('["landuse"~"^(reservoir|basin)$"]')});out geom;`,
-    parks: `[out:json][timeout:180];(${area('["leisure"~"^(park|garden|nature_reserve|common)$"]')}${area('["landuse"="recreation_ground"]')});out geom;`
+    parks: `[out:json][timeout:180];(${area('["leisure"~"^(park|garden|nature_reserve|common)$"]')}${area('["landuse"="recreation_ground"]')});out geom;`,
+    buildings: `[out:json][timeout:300];(${area('["building"]')}${area('["building:part"]')});out geom;`
   };
 }
 

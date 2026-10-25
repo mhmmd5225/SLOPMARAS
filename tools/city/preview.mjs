@@ -130,8 +130,12 @@ export function renderPreview(GEO, { mpp = 4, crop } = {}) {
     }
   }
   if (GEO.trees) {
-    const d = GEO.trees.data;
-    for (let i = 0; i < d.length; i += 4) cv.line([[d[i] / 10, d[i + 1] / 10], [d[i] / 10 + 0.1, d[i + 1] / 10]], Math.max(mpp * 1.2, d[i + 2] * 0.4), C.tree);
+    let x = 0, z = 0;
+    GEO.trees.heights.forEach((h, i) => {
+      x += GEO.trees.xz[i * 2] / 10;
+      z += GEO.trees.xz[i * 2 + 1] / 10;
+      cv.line([[x, z], [x + 0.1, z]], Math.max(mpp * 1.2, h * 0.4), C.tree);
+    });
   }
   const RG = GEO.roadGraph;
   const node = (i) => [RG.nodes[i * 2], RG.nodes[i * 2 + 1]];

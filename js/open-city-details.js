@@ -23,13 +23,16 @@ function buildOpenCityDetails(scene) {
   const trees = GEO.trees;
   if (trees) {
     const speciesOf = trees.shapes.map((name) => TREE_SPECIES.findIndex((sp) => sp.name === name));
-    const d = trees.data; // [x dm, z dm, height m, shape, ...]
-    for (let i = 0; i < d.length; i += 4) {
-      const species = speciesOf[d[i + 3]];
+    let qx = 0;
+    let qz = 0;
+    for (let i = 0; i < trees.heights.length; i++) {
+      qx += trees.xz[i * 2]; // dm, each a step from the tree before
+      qz += trees.xz[i * 2 + 1];
+      const species = speciesOf[trees.shape[i]];
       if (species < 0) continue;
-      const x = d[i] / 10;
-      const z = d[i + 1] / 10;
-      const height = Math.max(MIN_HEIGHT, d[i + 2]);
+      const x = qx / 10;
+      const z = qz / 10;
+      const height = Math.max(MIN_HEIGHT, trees.heights[i]);
       const b = blockAt(x, z);
       const park = !!b && b.park > 0.6;
       // draw distance: park trees and the tall ones furthest

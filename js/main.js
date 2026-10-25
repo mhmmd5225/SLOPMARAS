@@ -7,6 +7,7 @@ import { getLocationLabel, isTypingInField, ROADS, NYC_LANDMARKS, TELEPORT_LOCAT
 import { buildCityGrid } from './city-grid.js';
 import { buildLandmarks } from './landmarks.js';
 import { buildCityBlocks } from './buildings.js';
+import { buildOpenCityBuildings } from './open-city-buildings.js';
 import { buildStreetDetails } from './street-details.js';
 import { buildOpenCityDetails } from './open-city-details.js';
 import { createTrafficSystem, createHighwayTraffic } from './traffic.js';
@@ -117,7 +118,8 @@ async function initApp() {
   markInit('boroughs');
   const { colliders: landmarkColliders } = CITY.open ? { colliders: [] } : buildLandmarks(scene);
   markInit('landmarks');
-  const cityBlocks = buildCityBlocks(scene);
+  // (a city built from OpenStreetMap with its buildings mapped stands them as mapped; else they're generated on the lots)
+  const cityBlocks = (CITY.open && buildOpenCityBuildings(scene)) || buildCityBlocks(scene);
   markInit('blocks');
   const allColliders = [...landmarkColliders, ...cityBlocks.colliders, ...boroughs.colliders, ...(cityGrid.colliders || [])];
 

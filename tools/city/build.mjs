@@ -14,7 +14,11 @@
 //   blocks      as js/nyc-geodata.js: [outline, lot rects, park share, park name, rectangular, frontage frames | 0]
 //   districts   [{ name, style, x, z, r }] building styles by neighbourhood (nearest centre within r), places [{ id, name,
 //               sub, x, z }] teleport destinations & landmarks, labels [{ name, x, z, kind }] map labels (the config's)
-//   trees       { shapes, credit, data: [x dm, z dm, height m, shape index, ...] } the city's trees (or null)
+//   trees       { shapes, credit, xz: [dx, dz (dm) from the tree before, ...], heights (m), shape: [index into shapes] }
+//               the city's trees (or null)
+//   buildings   { types, data: [rings, top dm, bottom dm, type index, per ring: points, then each point's dx dz (dm)
+//               from the one before, a ring's first from the previous ring's first, ...] } OpenStreetMap's buildings &
+//               building parts (or null: generated on the lots)
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +27,7 @@ import { makeFrame, gridBearing } from './frame.mjs';
 import { bbox, centroid, pointInRing, rdp, rdpRing, ringArea } from './geom.mjs';
 import { extractBlocks, parkCoverage } from './blocks.mjs';
 import { createGraph } from './graph.mjs';
-import { areaRings, coastLand, streetPieces, traceRegions, yes as yesTag, VEHICLE_CLASSES } from './osm.mjs';
+import { areaPolygons, areaRings, coastLand, num, streetPieces, traceRegions, yes as yesTag, VEHICLE_CLASSES } from './osm.mjs';
 
 const log = (...a) => console.log('[city]', ...a);
 const q = (v) => Math.round(v * 10) / 10;
@@ -167,6 +171,105 @@ export async function buildCity(cityOrId, { out, data } = {}) {
   const roadGraph = { ...g.build(), classes: GRAPH_CLASSES };
   log(`road graph: ${roadGraph.nodes.length / 2} nodes, ${roadGraph.links.length} links (${waterBridges} bridges over water at grade)`);
 
+  // --- Neighbourhoods, places & labels from the config, in the world frame ---------------------------------------------
+  const at = ([lat, lon]) => toWorld(lon, lat).map(q);
+  const districts = (city.districts || []).map((d) => { const [x, z] = at(d.at); return { name: d.name, style: d.style, x, z, r: d.r }; });
+  const places = (city.places || []).map((p) => { const [x, z] = at(p.at); return { id: p.id, name: p.name, sub: p.sub || '', x, z }; });
+  const labels = (city.labels || []).map((l) => { const [x, z] = at(l.at); return { name: l.name, x, z, kind: l.kind }; });
+
+  // --- Buildings (osm_buildings.json, where fetched) ------------------------------------------------------------------
+  // Footprints with courtyards, the height of their tops & bottoms (m) from their tags, or a typical height for their
+  // type in their neighbourhood. A building drawn in parts (building:part) is its parts, unless they all stand above its
+  // own height (a tower on its podium).
+  let buildings = null;
+  const groundFootprints = []; // rings standing on the ground (trees can't grow there)
+  if (fs.existsSync(path.join(dir, 'osm_buildings.json'))) {
+    const LEVEL = 3.2;
+    const levelsOf = (t) => num(t['building:levels']);
+    const districtStyle = (x, z) => {
+      let best = null, bd = Infinity;
+      for (const d of districts) { const dd = Math.hypot(x - d.x, z - d.z); if (dd < d.r && dd < bd) { bd = dd; best = d; } }
+      return best ? best.style : 'generic';
+    };
+    // Storeys of a building without heights, by its type and neighbourhood
+    const TYPICAL = {
+      house: 2, detached: 2, terrace: 2, bungalow: 2, semidetached_house: 2, garage: 1, garages: 1, shed: 1, hut: 1, kiosk: 1,
+      service: 1, toilets: 1, train_station: 1, transportation: 1, roof: 1, temple: 2, church: 3, mosque: 2, chapel: 2,
+      school: 4, hospital: 8, hotel: 15, industrial: 2, warehouse: 2, parking: 5, civic: 4, public: 4, government: 5
+    };
+    const BY_STYLE = { 'glass-towers': 18, offices: 10, shophouses: 3, housing: 12, midrise: 6, lowrise: 3, generic: 4 };
+    const storeysOf = (type, style, area) => {
+      if (TYPICAL[type]) return TYPICAL[type];
+      if (type === 'residential' || type === 'apartments') return style === 'shophouses' ? 3 : style === 'housing' ? 14 : 6;
+      if (type === 'commercial' || type === 'office' || type === 'retail') return style === 'shophouses' ? 3 : (BY_STYLE[style] || 4);
+      return (BY_STYLE[style] || 4) + (area > 2500 ? 2 : 0);
+    };
+    const els = JSON.parse(fs.readFileSync(path.join(dir, 'osm_buildings.json'), 'utf8')).elements;
+    const items = [];
+    for (const e of els) {
+      const t = e.tags || {};
+      const part = !t.building && !!t['building:part'];
+      if (t.building === 'no' || t['building:part'] === 'no') continue;
+      for (const { outer, holes } of areaPolygons(e, toWorld, 8)) {
+        const o = rdpRing(outer, 0.3);
+        if (o.length < 3) continue;
+        const [cx, cz] = centroid(o);
+        if (!landAt(cx, cz) || !pointInRing(cx, cz, fetched)) continue;
+        if (ringArea(o) > 0) o.reverse();
+        const hs = holes.map((h) => rdpRing(h, 0.3)).filter((h) => h.length >= 3).map((h) => (ringArea(h) < 0 ? h.reverse() : h));
+        const type = t.building && t.building !== 'yes' ? t.building : t['building:part'] && t['building:part'] !== 'yes' ? t['building:part'] : 'yes';
+        const area = Math.abs(ringArea(o));
+        let top = num(t.height) > 0 ? num(t.height) : levelsOf(t) > 0 ? levelsOf(t) * LEVEL : 0;
+        const tagged = top > 0;
+        if (!tagged) top = storeysOf(type, districtStyle(cx, cz), area) * LEVEL;
+        let bottom = num(t.min_height) > 0 ? num(t.min_height) : num(t['building:min_level']) > 0 ? num(t['building:min_level']) * LEVEL : 0;
+        if (type === 'roof') { bottom = Math.max(bottom, top - 0.6, 2.6); top = Math.max(top, bottom + 0.4); } // canopies & covered walkways
+        if (top - bottom < 0.3) continue;
+        items.push({ part, type, outer: o, holes: hs, cx, cz, top, bottom, area });
+      }
+    }
+    // Outlines whose parts start at the ground are drawn by their parts
+    const parts = items.filter((b) => b.part);
+    const CELL = 64;
+    const partCells = new Map();
+    for (const p of parts) { const k = `${Math.floor(p.cx / CELL)},${Math.floor(p.cz / CELL)}`; if (!partCells.has(k)) partCells.set(k, []); partCells.get(k).push(p); }
+    const kept = items.filter((b) => {
+      if (b.part) return true;
+      const bb = bbox(b.outer);
+      for (let i = Math.floor(bb.x0 / CELL); i <= Math.floor(bb.x1 / CELL); i++) {
+        for (let j = Math.floor(bb.z0 / CELL); j <= Math.floor(bb.z1 / CELL); j++) {
+          for (const p of partCells.get(`${i},${j}`) || []) if (p.bottom < 1 && pointInRing(p.cx, p.cz, b.outer)) return false;
+        }
+      }
+      return true;
+    });
+    const types = [...new Set(kept.map((b) => b.type))];
+    // Neighbours next to each other (64 m cells, row by row): every coordinate is a short step from the one before
+    const cellKey = (b) => Math.floor(b.cz / CELL) * 1e6 + Math.floor(b.cx / CELL);
+    kept.sort((a, b) => cellKey(a) - cellKey(b) || a.cx - b.cx);
+    // [rings, top dm, bottom dm, type, then per ring: points, then each point's dx dz (dm) from the point before (the
+    // first from the previous ring's first point)]
+    const data = [];
+    let fx = 0, fz = 0;
+    for (const b of kept) {
+      const rings = [b.outer, ...b.holes];
+      data.push(rings.length, Math.round(b.top * 10), Math.round(b.bottom * 10), types.indexOf(b.type));
+      for (const r of rings) {
+        data.push(r.length);
+        let px = fx, pz = fz;
+        r.forEach(([x, z], i) => {
+          const qx = Math.round(x * 10), qz = Math.round(z * 10);
+          data.push(qx - px, qz - pz);
+          px = qx; pz = qz;
+          if (!i) { fx = qx; fz = qz; }
+        });
+      }
+      if (b.bottom < 3) groundFootprints.push(b.outer);
+    }
+    buildings = { types, data };
+    log(`${kept.length} buildings & parts (${items.length - kept.length} outlines drawn by their parts; ${kept.filter((b) => b.top > 60).length} over 60 m)`);
+  }
+
   // --- Trees (where the config names an inventory: tools/city/fetch.mjs) ------------------------------------------------
   // Each at its place with its height and crown shape, but none in the water, on a carriageway or on a building lot (the
   // buildings fill them). A kerbside tree the estimated roadway widths reach over moves up to 3 m onto the sidewalk.
@@ -203,6 +306,20 @@ export async function buildCity(cityOrId, { out, data } = {}) {
       }
       return null;
     };
+    // Ground-floor footprints by 32 m cell: a tree can't stand inside one
+    const FP_CELL = 32;
+    const fpCells = new Map();
+    for (const r of groundFootprints) {
+      const bb = bbox(r);
+      for (let i = Math.floor(bb.x0 / FP_CELL); i <= Math.floor(bb.x1 / FP_CELL); i++) {
+        for (let j = Math.floor(bb.z0 / FP_CELL); j <= Math.floor(bb.z1 / FP_CELL); j++) {
+          const key = i * 100000 + j;
+          if (!fpCells.has(key)) fpCells.set(key, []);
+          fpCells.get(key).push(r);
+        }
+      }
+    }
+    const underBuilding = (x, z) => (fpCells.get(Math.floor(x / FP_CELL) * 100000 + Math.floor(z / FP_CELL)) || []).some((r) => pointInRing(x, z, r));
     const data = [];
     const dropped = { water: 0, road: 0, lot: 0 };
     let moved = 0;
@@ -220,19 +337,20 @@ export async function buildCity(cityOrId, { out, data } = {}) {
         k = cellOf(x, z);
         moved++;
       }
+      // with real buildings, not inside one; else not on a lot of the generated ones
       const b = byLabel.get(lab[k]);
-      if (b && !(b.park > 0.6) && pointInRing(...centroid(b.poly), detail) && onLot(b, x, z)) { dropped.lot++; continue; }
-      data.push(Math.round(x * 10), Math.round(z * 10), Math.max(3, Math.round(parseFloat(height) || 0)), shapeOf(family.replace(/"/g, '')));
+      if (buildings ? underBuilding(x, z) : b && !(b.park > 0.6) && pointInRing(...centroid(b.poly), detail) && onLot(b, x, z)) { dropped.lot++; continue; }
+      data.push([Math.round(x * 10), Math.round(z * 10), Math.max(3, Math.round(parseFloat(height) || 0)), shapeOf(family.replace(/"/g, ''))]);
     }
-    trees = { shapes, credit: city.trees.credit, data };
-    log(`${data.length / 4} trees planted of ${rows.length} (${moved} moved off the roadway onto the kerb; ${dropped.water} in the water or beyond the map, ${dropped.road} on carriageways, ${dropped.lot} on building lots)`);
+    // Neighbours next to each other (64 m cells, row by row), each tree's place a short step from the one before
+    const treeKey = (t) => Math.floor(t[1] / 640) * 1e6 + Math.floor(t[0] / 640);
+    data.sort((a, b) => treeKey(a) - treeKey(b) || a[0] - b[0]);
+    const xz = [], heights = [], shapeIds = [];
+    let px = 0, pz = 0;
+    for (const [qx, qz, h, sh] of data) { xz.push(qx - px, qz - pz); heights.push(h); shapeIds.push(sh); px = qx; pz = qz; }
+    trees = { shapes, credit: city.trees.credit, xz, heights, shape: shapeIds };
+    log(`${data.length} trees planted of ${rows.length} (${moved} moved off the roadway onto the kerb; ${dropped.water} in the water or beyond the map, ${dropped.road} on carriageways, ${dropped.lot} ${buildings ? 'inside buildings' : 'on building lots'})`);
   }
-
-  // --- Neighbourhoods, places & labels from the config, in the world frame ---------------------------------------------
-  const at = ([lat, lon]) => toWorld(lon, lat).map(q);
-  const districts = (city.districts || []).map((d) => { const [x, z] = at(d.at); return { name: d.name, style: d.style, x, z, r: d.r }; });
-  const places = (city.places || []).map((p) => { const [x, z] = at(p.at); return { id: p.id, name: p.name, sub: p.sub || '', x, z }; });
-  const labels = (city.labels || []).map((l) => { const [x, z] = at(l.at); return { name: l.name, x, z, kind: l.kind }; });
 
   // --- Assemble ----------------------------------------------------------------------------------------------------------
   const GEO = {
@@ -251,7 +369,8 @@ export async function buildCity(cityOrId, { out, data } = {}) {
     districts,
     places,
     labels,
-    trees
+    trees,
+    buildings
   };
   const file = out || fileURLToPath(new URL(`../../js/${city.id}-geodata.js`, import.meta.url));
   const header = `// js/${city.id}-geodata.js — GENERATED by tools/city/build.mjs ${city.id}, do not edit by hand.
@@ -259,7 +378,8 @@ export async function buildCity(cityOrId, { out, data } = {}) {
 // z = grid south, origin at ${city.origin.label}, axes turned ${bearingDeg}° from true north.
 // Source: © OpenStreetMap contributors (ODbL).
 `;
-  fs.writeFileSync(file, `${header}export const GEO = ${JSON.stringify(GEO)};\n`);
+  // (as a JSON string: engines parse JSON faster than an object literal this size)
+  fs.writeFileSync(file, `${header}export const GEO = JSON.parse(${JSON.stringify(JSON.stringify(GEO))});\n`);
   log(`wrote ${file} (${(fs.statSync(file).size / 1024).toFixed(0)} KB)`);
   for (const [k, v] of Object.entries(GEO)) log(`  ${k}: ${(JSON.stringify(v).length / 1024).toFixed(0)} KB`);
   return GEO;

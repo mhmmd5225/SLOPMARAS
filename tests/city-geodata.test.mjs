@@ -98,6 +98,18 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
     const treeAt = { sea: [500, 0], road: [0, 200], kerb: [6.5, 200], park: [150, -150], lot: [160, 160], sidewalk: [9, 160] };
     fs.writeFileSync(path.join(dir, 'trees.csv'), ['lng,lat,height,family', ...Object.entries(treeAt).map(([k, [x, z]], i) =>
       `${ll(x, z).join(',')},${6 + i * 3},"${k === 'park' ? 'Fabaceae (Leguminosae)' : 'Myrtaceae'}"`)].join('\n') + '\n');
+    // Buildings: one of 10 storeys over the lot tree, one drawn by its part (from the ground up to 50 m), a canopy
+    const square = (id, x, z, half, tags) => {
+      const c = [[x - half, z - half], [x + half, z - half], [x + half, z + half], [x - half, z + half], [x - half, z - half]];
+      return way(id, [id * 10, id * 10 + 1, id * 10 + 2, id * 10 + 3, id * 10], c.map(([px, pz]) => ll(px, pz)), tags);
+    };
+    write('buildings', [
+      square(60, 160, 160, 10, { building: 'apartments', 'building:levels': '10' }),
+      square(61, 160, -40 + 200, 0, { building: 'yes' }), // degenerate: dropped
+      square(62, -150, -150, 15, { building: 'yes', height: '20' }),
+      square(63, -150, -150, 8, { 'building:part': 'yes', height: '50' }),
+      square(64, -60, -220, 6, { building: 'roof' })
+    ]);
     const city = {
       id: 'testcity', name: 'Test City', origin: { lat: LAT0, lon: LON0, label: 'the crossing' }, bearing: 'auto',
       detail: [LAT0 - 0.0032, LON0 - 0.0032, LAT0 + 0.0032, LON0 + 0.0032], margin: 0.001, sidewalk: 5, strip: 6, driveSide: 'left',
@@ -127,10 +139,37 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
     assert.equal(ns.length, 2);
     assert.ok(ns.every((l) => l[4] === 4 && l[5] === 0 && RG.classes[l[7]] === 'primary' && l[8] === 0));
     assert.ok(ew.every((l) => l[5] === 1 && RG.nodes[l[1] * 2] > RG.nodes[l[0] * 2]), 'one-way eastbound along its links');
-    // trees: the park's, the sidewalk's and the kerbside one (moved off the roadway) stand; the rest don't
+    // buildings: [rings, top dm, bottom dm, type, per ring: points, dx dz (dm) from the point before...]
+    const B = GEO.buildings, built = [];
+    for (let i = 0, fx = 0, fz = 0; i < B.data.length;) {
+      const b = { rings: B.data[i], top: B.data[i + 1] / 10, bottom: B.data[i + 2] / 10, type: B.types[B.data[i + 3]], pts: [] };
+      i += 4;
+      for (let r = 0; r < b.rings; r++) {
+        const n = B.data[i++];
+        let px = fx, pz = fz;
+        for (let k = 0; k < n; k++) {
+          px += B.data[i++]; pz += B.data[i++];
+          if (!r) b.pts.push([px / 10, pz / 10]);
+          if (!k) { fx = px; fz = pz; }
+        }
+      }
+      built.push(b);
+    }
+    assert.equal(built.length, 3, JSON.stringify(built.map((b) => [b.type, b.top])));
+    const at = (x, z) => built.find((b) => b.pts.every(([px, pz]) => Math.abs(px - x) < 17 && Math.abs(pz - z) < 17));
+    assert.equal(at(160, 160).top, 32, 'ten storeys of 3.2 m');
+    assert.equal(at(-150, -150).top, 50, 'the part stands for its outline');
+    assert.ok(at(-60, -220).bottom >= 2.6, 'a canopy stands clear of the ground');
+    // trees: the park's, the sidewalk's and the kerbside one (moved off the roadway) stand; the rest (in the sea,
+    // mid-carriageway, inside the apartment block) don't
     assert.deepEqual(GEO.trees.shapes, ['plane', 'locust']);
     const planted = [];
-    for (let i = 0; i < GEO.trees.data.length; i += 4) planted.push(GEO.trees.data.slice(i, i + 4));
+    let tx = 0, tz = 0;
+    GEO.trees.heights.forEach((h, i) => {
+      tx += GEO.trees.xz[i * 2];
+      tz += GEO.trees.xz[i * 2 + 1];
+      planted.push([tx, tz, h, GEO.trees.shape[i]]);
+    });
     assert.equal(planted.length, 3, JSON.stringify(planted));
     const near = ([x, z], r) => planted.find((t) => Math.hypot(t[0] / 10 - x, t[1] / 10 - z) < r);
     assert.equal(near(treeAt.park, 1)[3], 1, 'a legume grows as a locust');
