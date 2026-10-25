@@ -8,7 +8,7 @@ import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField
 // Broadway, the piers, bridges, boroughs and landmarks), which the builders skip or do without.
 
 const F = GEO.frame;
-const CITY = { id: GEO.city, name: GEO.name, open: true, driveSide: F.driveSide || 'right' };
+const CITY = { id: GEO.city, name: GEO.name, short: GEO.short, open: true, driveSide: F.driveSide || 'right' };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Land: the land masses ({ outer, holes } outlines, [{ x, z }]) and the detailed area (blocks stand inside it)
@@ -72,7 +72,20 @@ function getIslandBoundsAtZ(z) {
 // ---------------------------------------------------------------------------------------------------------------------
 const BLOCKS = createBlocks(GEO.blocks);
 const { blockAt, blocksInRect } = createBlockIndex(BLOCKS);
-for (const b of BLOCKS) b.district = 'generic';
+
+// The building style of the neighbourhood at (x, z) (GEO.districts: the nearest centre within its radius; buildings.js
+// knows the styles), or 'generic'
+const DISTRICTS = GEO.districts || [];
+function districtAt(x, z) {
+  let best = null;
+  let bd = Infinity;
+  for (const d of DISTRICTS) {
+    const dist = Math.hypot(x - d.x, z - d.z);
+    if (dist < d.r && dist < bd) { bd = dist; best = d; }
+  }
+  return best ? best.style : 'generic';
+}
+for (const b of BLOCKS) b.district = districtAt(b.cx, b.cz);
 
 const RG = GEO.roadGraph;
 const nodePt = (i) => ({ x: RG.nodes[i * 2], z: RG.nodes[i * 2 + 1] });
@@ -137,12 +150,40 @@ const SPAWN = (() => {
   return { x: (from.x + to.x) / 2, z: (from.z + to.z) / 2, heading: Math.atan2(to.x - from.x, to.z - from.z) };
 })();
 
-/** The nearest streets' names at (x, z): "A & B", one street, or the city's name */
+// The nearest point on an at-grade street (not an expressway) within `radius` of (x, z), heading along it (the way its
+// traffic goes, or from a towards b on a two-way street): { x, z, heading } or null
+function nearestStreetPoint(x, z, radius = 300) {
+  let best = null;
+  for (const l of RG.links) {
+    if (l[8] !== 0 || HIGHWAY_CLASSES.has(RG.classes[l[7]])) continue;
+    const pts = [nodePt(l[0]), ...toPts(l[6]), nodePt(l[1])];
+    for (let k = 0; k + 1 < pts.length; k++) {
+      const a = pts[k];
+      const b = pts[k + 1];
+      if (Math.min(a.x, b.x) > x + radius || Math.max(a.x, b.x) < x - radius || Math.min(a.z, b.z) > z + radius || Math.max(a.z, b.z) < z - radius) continue;
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const L2 = dx * dx + dz * dz || 1e-9;
+      const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / L2));
+      const px = a.x + dx * t, pz = a.z + dz * t;
+      const d = Math.hypot(px - x, pz - z);
+      if (d < radius && (!best || d < best.d)) best = { d, x: px, z: pz, heading: Math.atan2(dx, dz) + (l[5] < 0 ? Math.PI : 0) };
+    }
+  }
+  return best && { x: best.x, z: best.z, heading: best.heading };
+}
+
+// Places (GEO.places): the teleport destinations, arriving on the street nearest each, and the landmarks the labels name
+const PLACES = (GEO.places || []).map((p) => ({ ...p, arrival: nearestStreetPoint(p.x, p.z) }));
+const TELEPORT_LOCATIONS = Object.fromEntries(PLACES.filter((p) => p.arrival).map((p) => [p.id, { ...p.arrival, name: p.name, sub: p.sub }]));
+const NYC_LANDMARKS = PLACES.map((p) => ({ id: p.id, name: p.name, short: p.name, x: p.x, z: p.z, district: p.sub }));
+
+/** The place or the nearest streets' names at (x, z): "Place · A & B", "A & B", one street, or the city's name */
 function getLocationLabel(x, z) {
   const near = nearestRoads(x, z, 120);
-  if (near.length >= 2 && near[1].dist < 60) return `${near[0].road.name} & ${near[1].road.name}`;
-  if (near.length) return near[0].road.name;
-  return CITY.name;
+  const streets = near.length >= 2 && near[1].dist < 60 ? `${near[0].road.name} & ${near[1].road.name}` : near.length ? near[0].road.name : '';
+  const place = NYC_LANDMARKS.find((p) => Math.hypot(x - p.x, z - p.z) < 80);
+  if (place) return streets ? `${place.name} · ${streets}` : place.name;
+  return streets || CITY.name;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -158,9 +199,7 @@ const BROADWAY_LINE = [];
 const WATERFRONT_PIERS = [];
 const EAST_RIVER_BRIDGES = [];
 const OUTER_BRIDGES = [];
-const NYC_LANDMARKS = [];
 const LANDMARK_SITES = {};
-const TELEPORT_LOCATIONS = {};
 const LANDMARK_BLOCKS = new Set();
 const NONE = [];
 const FAR = { x: 1e7, z: 1e7 };
@@ -168,7 +207,6 @@ const streetZ = (n) => (42 - n) * 79.5;
 const avenueX = () => NaN;
 const avenueNameAt = () => '';
 const getBroadwayX = () => NaN;
-const districtAt = () => 'generic';
 const getBlockBounds = () => null;
 const fromOldFrame = (x, z) => ({ x, z });
 

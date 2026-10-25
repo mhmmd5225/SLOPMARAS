@@ -1762,8 +1762,20 @@ function buildCityBlocks(scene) {
     });
   }
 
+  // Building styles of a city built from OpenStreetMap, which its neighbourhoods name (open-city-config.js districtAt)
+  const PROJECTS_TALL = { ...PROJECTS, floors: [16, 30] };
+  const OPEN_STYLES = {
+    'glass-towers': () => OFFICE_HUDSON_YARDS,
+    offices: () => OFFICE_MIDTOWN,
+    shophouses: () => RES_WEST_VILLAGE,
+    housing: () => (chance(0.6) ? PROJECTS_TALL : RES_EAST_MIDTOWN),
+    midrise: () => (chance(0.5) ? RES_CHELSEA : LOFT_CHELSEA),
+    lowrise: () => LOWRISE
+  };
+
   // Profile of a block by its real neighbourhood (city-config.js districtAt)
   function blockProfile(blk, district) {
+    if (Object.hasOwn(OPEN_STYLES, district)) return OPEN_STYLES[district]();
     switch (district) {
       case 'riverfront': return RIVERFRONT;
       case 'hudson_yards': return OFFICE_HUDSON_YARDS;

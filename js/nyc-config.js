@@ -533,7 +533,7 @@ NYC_LANDMARKS.push(
 
 // The city (see open-city-config.js): its land masses as built here (the detailed island; the rest is boroughs.js's)
 // and where a session without a saved position starts (5th Ave at 37th St, as controllers.js places every mode)
-const CITY = { id: 'nyc', name: 'New York', open: false, driveSide: 'right' };
+const CITY = { id: 'nyc', name: 'New York', short: 'NY', open: false, driveSide: 'right' };
 const LAND_REGIONS = [{ outer: MANHATTAN_COASTLINE, holes: [] }];
 const DETAIL_POLYGON = MANHATTAN_COASTLINE;
 const WATER_BODIES = [];

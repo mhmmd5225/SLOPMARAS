@@ -26,6 +26,12 @@ async function initApp() {
   const container = document.getElementById('canvas-container');
   const loadingOverlay = document.getElementById('loading-overlay');
   const loadingStatus = document.getElementById('loading-status');
+  // A city built from OpenStreetMap names itself on the page (index.html is New York's)
+  if (CITY.open) {
+    document.title = `Slop ${CITY.name}`;
+    for (const el of document.querySelectorAll('.loader-title, h1')) el.textContent = `Slop ${CITY.name}`;
+    for (const el of document.querySelectorAll('.mta-bullet')) el.textContent = CITY.short;
+  }
   const loadingTrack = loadingOverlay ? loadingOverlay.querySelector('.loader-track') : null;
   const loadingFill = document.getElementById('loading-progress');
   // The loading bar sweeps while the city is being built (the main thread is busy) and fills as the shaders compile
@@ -104,6 +110,10 @@ async function initApp() {
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
   const controllerManager = new ThirdPersonControllerManager(scene, allColliders);
+  if (CITY.open) {
+    controllerManager.entities.car.label = 'Taxi';
+    controllerManager.entities.cyclist.label = 'Cyclist';
+  }
   // Reuse teleport placement so saved players return at rest, close to their last positions. Each city keeps its own.
   const playerStateKey = CITY.open ? `${CITY.id}-player-state` : 'nyc-player-state';
   let restored = false;
@@ -231,6 +241,31 @@ async function initApp() {
   const renderPipeline = new THREE.RenderPipeline(renderer, colorGrade.outputNode);
 
   // 6. Wire UI Controls (Strictly using safe DOM APIs: textContent, classList, addEventListener)
+  // A city built from OpenStreetMap offers teleports to its own places, and only the cameras following the player and
+  // the auto-director (the scenic ones look at New York's landmarks)
+  const CAMERAS = CITY.open ? CAMERA_PRESETS.filter((p) => p.category === 'follow' || p.id === 'drone') : CAMERA_PRESETS;
+  const cameraOffered = (id) => CAMERAS.some((p) => p.id === id);
+  if (CITY.open) {
+    const popover = document.getElementById('teleport-popover');
+    if (popover) {
+      for (const btn of popover.querySelectorAll('[data-teleport]')) btn.remove();
+      for (const [key, loc] of Object.entries(TELEPORT_LOCATIONS)) {
+        const btn = document.createElement('button');
+        btn.className = 'pop-item tp-btn';
+        btn.type = 'button';
+        btn.dataset.teleport = key;
+        const name = document.createElement('span');
+        name.className = 'pop-name';
+        name.textContent = loc.name;
+        const sub = document.createElement('span');
+        sub.className = 'pop-sub';
+        sub.textContent = loc.sub;
+        btn.append(name, sub);
+        popover.appendChild(btn);
+      }
+    }
+    for (const btn of document.querySelectorAll('[data-camera]')) if (!cameraOffered(btn.dataset.camera)) btn.remove();
+  }
   const modeButtons = document.querySelectorAll('[data-mode]');
   const cameraButtons = document.querySelectorAll('[data-camera]');
   const timeButtons = document.querySelectorAll('[data-time]');
@@ -315,6 +350,7 @@ async function initApp() {
   }
 
   function selectCamera(camId, snap = false) {
+    if (!cameraOffered(camId)) return;
     cameraSystem.setCameraPreset(camId, snap);
     cameraButtons.forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-camera') === camId);
@@ -323,11 +359,11 @@ async function initApp() {
     if (elCamera) elCamera.textContent = preset.name;
   }
 
-  // Steps through CAMERA_PRESETS (V / Shift+V, and the arrows either side of the camera name)
+  // Steps through the cameras offered (V / Shift+V, and the arrows either side of the camera name)
   function cycleCamera(step) {
-    const n = CAMERA_PRESETS.length;
-    const idx = CAMERA_PRESETS.findIndex((p) => p.id === cameraSystem.activePresetId);
-    selectCamera(CAMERA_PRESETS[(idx + step + n) % n].id, true);
+    const n = CAMERAS.length;
+    const idx = CAMERAS.findIndex((p) => p.id === cameraSystem.activePresetId);
+    selectCamera(CAMERAS[(idx + step + n) % n].id, true);
   }
 
   function selectTime(timeId) {

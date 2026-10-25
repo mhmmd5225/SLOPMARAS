@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -23,7 +24,7 @@ function inCity(city, body) {
 
 test('New York stays the default city', () => {
   const out = inCity('', 'return { city: config.CITY, blocks: config.BLOCKS.length, same: config.BLOCKS === nyc.BLOCKS };');
-  assert.deepEqual(out.city, { id: 'nyc', name: 'New York', open: false, driveSide: 'right' });
+  assert.deepEqual(out.city, { id: 'nyc', name: 'New York', short: 'NY', open: false, driveSide: 'right' });
   assert.ok(out.same && out.blocks > 2000);
 });
 
@@ -41,16 +42,33 @@ test('a city built from OpenStreetMap serves the whole city-config.js interface'
       spawnInBlock: !!config.blockAt(SPAWN.x, SPAWN.z),
       spawnShore: config.getIslandBoundsAtZ(SPAWN.z),
       spawnX: SPAWN.x,
-      label: config.getLocationLabel(SPAWN.x, SPAWN.z)
+      label: config.getLocationLabel(SPAWN.x, SPAWN.z),
+      teleports: Object.entries(config.TELEPORT_LOCATIONS).map(([id, t]) => ({ id, name: t.name, inBlock: !!config.blockAt(t.x, t.z), heading: t.heading })),
+      styled: config.BLOCKS.filter((b) => b.district !== 'generic').length
     };
   `);
   assert.ok(out.sameNames, 'the same exports as nyc-config.js');
   assert.deepEqual(out.missing, []);
-  assert.deepEqual(out.city, { id: 'singapore', name: 'Singapore', open: true, driveSide: 'left' });
+  assert.deepEqual(out.city, { id: 'singapore', name: 'Singapore', short: 'SG', open: true, driveSide: 'left' });
   assert.ok(out.blocks > 1000 && out.roads > 500 && out.land > 0);
   assert.equal(out.spawnInBlock, false, 'the start is on a street');
   assert.ok(out.spawnX > out.spawnShore.westX && out.spawnX < out.spawnShore.eastX, 'the start is on land');
   assert.match(out.label, /\w+ & \w+|\w+/);
+  assert.ok(out.teleports.length >= 8, 'a teleport to each place');
+  for (const t of out.teleports) {
+    assert.equal(t.inBlock, false, `${t.name} arrives on a street`);
+    assert.ok(Number.isFinite(t.heading));
+  }
+  assert.ok(out.styled > 300, 'neighbourhoods give blocks their building styles');
+});
+
+test("every building style a city's neighbourhoods name is one buildings.js builds", async () => {
+  const buildings = fs.readFileSync(new URL('../js/buildings.js', import.meta.url), 'utf8');
+  const styles = buildings.match(/const OPEN_STYLES = \{([^]*?)\n  \};/)[1];
+  for (const file of fs.readdirSync(new URL('../tools/city/cities/', import.meta.url))) {
+    const city = (await import(new URL(`../tools/city/cities/${file}`, import.meta.url).href)).default;
+    for (const d of city.districts || []) assert.match(styles, new RegExp(`(^|\\s|')${d.style}'?:`), `${city.id}: ${d.name} (${d.style})`);
+  }
 });
 
 test("Singapore's streets drive as one network", () => {

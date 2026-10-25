@@ -84,9 +84,12 @@ const MODELLED_LANDMARKS = [
   'Flatiron Building', 'One World Trade Center', 'New York Stock Exchange'
 ];
 
-// Borough (0), waterway (1) & neighbourhood (2) names at their real places (world metres); none yet for the cities
-// built from OpenStreetMap
-const AREA_LABELS = CITY.open ? [] : [
+// Borough (0), waterway (1) & neighbourhood (2) names at their real places (world metres); a city built from
+// OpenStreetMap labels its config's places of note and neighbourhoods (GEO.labels, GEO.districts)
+const AREA_LABELS = CITY.open ? [
+  ...(GEO.labels || []).map((l) => [l.name, l.x, l.z, l.kind]),
+  ...(GEO.districts || []).map((d) => [d.name.toUpperCase(), d.x, d.z, 2])
+] : [
   ['MANHATTAN', 120, -1500, 0], ['NEW JERSEY', -7000, 2000, 0], ['BROOKLYN', 7850, 8780, 0], ['QUEENS', 8810, -1680, 0],
   ['THE BRONX', 1010, -9640, 0], ['STATEN ISLAND', -1800, 19220, 0],
   ['HUDSON RIVER', -2680, -300, 1], ['HUDSON RIVER', -2650, -5600, 1], ['EAST RIVER', 1700, 800, 1],
