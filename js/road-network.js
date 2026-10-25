@@ -17,7 +17,8 @@ import { GEO } from './geodata.js';
 // lane-to-lane curves used to drive straight through them or turn.
 //
 // Conventions: north = -z, east = +x. Every directed edge has a unit direction (dx, dz) and a right normal
-// (rx, rz) = (-dz, dx). Lanes are lateral offsets to the right of the centreline, sorted left to right.
+// (rx, rz) = (-dz, dx). Lanes are lateral offsets to the right of the centreline, sorted left to right (a two-way
+// road's on the side traffic keeps to: the right, or the left in a city driving on the left).
 
 const CELL = 32;
 const Z_MIN = Math.floor(ISLAND_BOUNDS.minZ) - 20; // the detailed island, ~129th St to the Battery
@@ -27,6 +28,12 @@ const CROSSWALK = 2.5; // depth between an intersection box and its stop lines
 const SHORE_MARGIN = 6;
 // A city built from OpenStreetMap: curving streets followed within a metre (4b) and U-turns at dead ends (6.)
 const OPEN_CITY = CITY.open;
+// The side traffic keeps to: a two-way road's lanes run right of its centreline, or left of it (KEEP -1), and the turn
+// across the oncoming lanes is the left one, or the right one
+const KEEP = CITY.driveSide === 'left' ? -1 : 1;
+const ACROSS = KEEP > 0 ? 'L' : 'R';
+// Lane offsets measured to the right (sorted left to right) kept to the side traffic keeps to
+const keepSide = (offsets) => (KEEP > 0 ? offsets : offsets.map((o) => -o).reverse());
 
 function buildRoadNetwork(sidewalks, obstacles) {
   // 1. Spatial hash of ground footprints: curbs bound the roads, everything else also blocks pedestrians
@@ -404,7 +411,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
         const lanes = laneOffsets(half) || [0];
         return { half, axis, fwd: l.dir > 0 ? lanes : [], back: l.dir < 0 ? lanes : [] };
       }
-      const each = half >= 8.5 ? [1.8, 5.4] : [1.8];
+      const each = keepSide(half >= 8.5 ? [1.8, 5.4] : [1.8]);
       return { half, axis, fwd: each, back: each };
     }
     const DEG = Math.PI / 180;
@@ -505,7 +512,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
     edges.push({ from, to, axis, x0, z0, dx, dz, rx: -dz, rz: dx, span, half, lanes: open.sort((p, q) => p - q), moves: [], general: true, cand: lanes, divided: !!divided });
   }
   // A divided road drawn as two one-way roadways between the same two junctions (most of the Bowery) runs both ways
-  // along one centreline here: each way keeps to the right of it, as on a two-way street, and the road is as wide as
+  // along one centreline here: each way keeps to its side of it, as on a two-way street, and the road is as wide as
   // both roadways
   const travel = (r) => (r.fwd.length ? [r.from, r.to] : [r.to, r.from]);
   const oneWays = new Map(); // node -> next node -> the one-way run from one to the other
@@ -522,9 +529,10 @@ function buildRoadNetwork(sidewalks, obstacles) {
     if (!o || o.divided) continue;
     for (const q of [r, o]) {
       const lanes = q.fwd.length ? q.fwd : q.back;
-      const right = lanes.map((x) => x - lanes[0] + 1.8); // as on a two-way street, from 1.8 m right of the centreline
-      if (q.fwd.length) q.fwd = right;
-      else q.back = right;
+      // as on a two-way street, from 1.8 m right (or left) of the centreline
+      const kept = KEEP > 0 ? lanes.map((x) => x - lanes[0] + 1.8) : lanes.map((x) => x - lanes[lanes.length - 1] - 1.8);
+      if (q.fwd.length) q.fwd = kept;
+      else q.back = kept;
       q.divided = true;
     }
     r.half = o.half = r.half + o.half;
@@ -548,7 +556,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
   // ...and where only some of the junctions on both sides of its median became one (Pike St), the stretches of its two
   // roadways that run on top of each other the same way
   {
-    const oneWay = edges.filter((e) => e.general && !e.divided && e.cand[0] <= 0); // lanes about its centreline
+    const oneWay = edges.filter((e) => e.general && !e.divided && e.cand[0] <= 0 && e.cand[e.cand.length - 1] >= 0); // lanes about its centreline
     const cells = new Map(); // 16 m cells -> the one-way edges passing within 4 m
     oneWay.forEach((e, i) => {
       e.oneWay = i;
@@ -596,7 +604,8 @@ function buildRoadNetwork(sidewalks, obstacles) {
       }
     }
     for (const [e, other] of partner) {
-      e.lanes = e.cand.map((o) => o - e.cand[0] + 1.8).filter((o) => laneOpen(e.x0, e.z0, e.dx, e.dz, e.span, o));
+      const kept = KEEP > 0 ? e.cand.map((o) => o - e.cand[0] + 1.8) : e.cand.map((o) => o - e.cand[e.cand.length - 1] - 1.8);
+      e.lanes = kept.filter((o) => laneOpen(e.x0, e.z0, e.dx, e.dz, e.span, o));
       e.half += other;
       if (e.half >= 7.25) e.axis = 'ave'; // as wide as a major road (see lanesOf)
       e.divided = true;
@@ -841,13 +850,14 @@ function buildRoadNetwork(sidewalks, obstacles) {
   for (const e of edges) {
     const n = e.lanes.length;
     // At a dead end, where the only road on is the way back, a city built from OpenStreetMap (with its cul-de-sacs and
-    // the streets cut off where its map ends) turns round: a U-turn, from the leftmost lane like a left turn
+    // the streets cut off where its map ends) turns round: a U-turn, across the oncoming lanes like a left turn (in a
+    // city driving on the left, a right one)
     const turnaround = OPEN_CITY && e.to.out.every((f) => reverses(e, f));
     for (const f of e.to.out) {
       const uturn = turnaround && f.to === e.from;
       if (!uturn && reverses(e, f)) continue;
       const cross = e.dx * f.dz - e.dz * f.dx;
-      e.moves.push({ to: f, turn: uturn || cross < -0.5 ? 'L' : cross > 0.5 ? 'R' : 'S', cross, uturn, out: new Array(n).fill(-1) });
+      e.moves.push({ to: f, turn: uturn ? ACROSS : cross < -0.5 ? 'L' : cross > 0.5 ? 'R' : 'S', cross, uturn, out: new Array(n).fill(-1) });
     }
     // the straightest first: where a road forks, the branch going most nearly straight on keeps most of its lanes
     const ahead = (m) => e.dx * m.to.dx + e.dz * m.to.dz;
@@ -1125,7 +1135,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
   }
 
   const isRoadClear = (x, z, clear = 0.15) => !blockedOnStreet(x, z, clear);
-  return { nodes, edges, paintEdges, connector, curvePoint, walkable, onSidewalk, isRoadClear };
+  return { nodes, edges, paintEdges, connector, curvePoint, walkable, onSidewalk, isRoadClear, keepLeft: KEEP < 0, across: ACROSS };
 }
 
 // The farthest that points i0 + 1 .. i1 - 1 of a polyline ([{ x, z }]) lie from the chord between points i0 and i1

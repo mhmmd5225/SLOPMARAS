@@ -102,6 +102,7 @@ function intersectionHarness() {
   const state = { phase: 'red', occupied: false, pedestrians: false, space: true, conflict: false };
   const context = {
     LOOKAHEAD: 70,
+    ACROSS: 'L',
     phaseOf: () => state.phase,
     canStopBefore: () => true,
     stopAt: () => -3,
@@ -168,7 +169,7 @@ test('left turns account for oncoming police even when their signal is red', () 
   const edge = { to: { signal: true }, through: 0, len: 100, occ: [] };
   const car = { edge, move: { turn: 'S', out: [0] }, lane: 0, speed: 10, half: 2.25, isPolice: false };
   edge.occ.push([{ v: car, s: 85 }]);
-  const context = { phaseOf: () => 'red', leadOf: (list) => list.at(-1) };
+  const context = { ACROSS: 'L', phaseOf: () => 'red', leadOf: (list) => list.at(-1) };
   context.canStop = trafficFunction('canStop', context);
   const yieldOncoming = trafficFunction('yieldOncoming', context);
   assert.equal(yieldOncoming(edge, false), false);
@@ -176,6 +177,20 @@ test('left turns account for oncoming police even when their signal is red', () 
   assert.equal(yieldOncoming(edge, false), true);
   car.speed = 0;
   assert.equal(yieldOncoming(edge, false), false);
+});
+
+test('where traffic keeps left, right turns give way to oncoming traffic and left turns do not', () => {
+  const edge = { to: { signal: false }, through: 0, len: 100, occ: [] };
+  const oncoming = { edge, move: { turn: 'S', out: [0] }, lane: 0, speed: 10, half: 2.25, isPolice: false };
+  edge.occ.push([{ v: oncoming, s: 85 }]);
+  const context = { ACROSS: 'R', phaseOf: () => 'green', leadOf: (list) => list.at(-1) };
+  context.canStop = trafficFunction('canStop', context);
+  const yieldOncoming = trafficFunction('yieldOncoming', context);
+  assert.equal(yieldOncoming(edge, false), true, 'a car coming straight on');
+  oncoming.move.turn = 'R'; // turning across too: no conflict
+  assert.equal(yieldOncoming(edge, false), false);
+  oncoming.move.turn = 'L'; // turning away, kerbside
+  assert.equal(yieldOncoming(edge, false), true);
 });
 
 function populationContext() {

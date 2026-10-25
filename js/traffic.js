@@ -104,6 +104,9 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   // =========================================================================
   const network = buildRoadNetwork(sidewalks, obstacles);
   const { nodes, edges, connector, curvePoint } = network;
+  // The turn across the oncoming lanes: the left one, or the right one where traffic keeps left
+  const ACROSS = network.across || 'L';
+  const KEEP = network.keepLeft ? -1 : 1;
 
   // Sides of an intersection (road-network.js step 9): a grid intersection's are 0 east, 1 west, 2 south, 3 north;
   // centreline junctions number their arms from 4. Where lane i of edge e meets a crosswalk, measured along the
@@ -124,8 +127,8 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     // e.opposite: the oncoming edge of its road there (road-network.js)
     e.to.approach[e.inSide] = e;
     e.to.road[e.inSide] = e.from.road[e.outSide] = e;
-    e.through = 0; // vehicles from e crossing e.to straight on or to the right
-    e.lefts = 0; // and to the left
+    e.through = 0; // vehicles from e crossing e.to straight on or turning away from the oncoming lanes
+    e.lefts = 0; // and across them (to the left, or to the right in a city driving on the left: network.across)
   }
   // Is the intersection box held by vehicles of any road but group g's?
   const boxBusy = (n, g) => {
@@ -474,7 +477,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     const f = v.move.to;
     touchNode(e.to).box[e.axisIndex]++;
     if (!v.conn || v.cs < v.half + 2.5) e.to.crossing[e.inSide]++; // until its tail is past the crosswalk on its way in
-    if (v.move.turn !== 'L') touchEdge(e).through++;
+    if (v.move.turn !== ACROSS) touchEdge(e).through++;
     if (!v.yielding) cross(v);
     occupy(f.occ[v.out], v, v.conn ? v.cs - v.conn.len : v.s - e.len - connector(e, v.lane, f, v.out).len);
   }
@@ -482,7 +485,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   // ...and, unless still waiting inside to turn left, the oncoming lanes and the crosswalk on its way out
   function cross(v) {
     const e = v.edge;
-    if (v.move.turn === 'L') touchEdge(e).lefts++;
+    if (v.move.turn === ACROSS) touchEdge(e).lefts++;
     touchNode(e.to).crossing[v.move.to.outSide]++;
     v.yielding = false;
   }
@@ -708,7 +711,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     const red = o.to.signal && phaseOf(o) === 'red';
     for (const list of o.occ) {
       const lead = leadOf(list);
-      if (!lead || (lead.v.edge === o && lead.v.move.turn === 'L')) continue;
+      if (!lead || (lead.v.edge === o && lead.v.move.turn === ACROSS)) continue;
       if (red && !lead.v.isPolice) continue;
       if (!canStop(lead, o, impatient)) return true;
       const u = lead.v;
@@ -719,15 +722,16 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   }
 
   // How far along curve c, out of two-way edge e, v can pull forward before its front corner reaches the
-  // oncoming lanes (left of the centre line): where it waits for a gap to turn left
+  // oncoming lanes (left of the centre line, or right of it in a city driving on the left): where it waits for a gap
+  // to turn across them
   const corner = { x: 0, z: 0, dx: 0, dz: 1 };
   function yieldPoint(v, c, e) {
     let cs = 0;
     for (; cs < c.len; cs += 0.5) {
       curvePoint(c, cs + v.half, corner);
-      const x = corner.x + corner.dz * v.halfWidth;
-      const z = corner.z - corner.dx * v.halfWidth;
-      if ((x - e.x0) * e.rx + (z - e.z0) * e.rz < 0.3) break;
+      const x = corner.x + corner.dz * v.halfWidth * KEEP;
+      const z = corner.z - corner.dx * v.halfWidth * KEEP;
+      if (((x - e.x0) * e.rx + (z - e.z0) * e.rz) * KEEP < 0.3) break;
     }
     return cs - 0.5;
   }
@@ -765,8 +769,8 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   const pedsOut = (v, d) => d > 0 && pedestrianOn(v.edge.to, v.move.to.outSide, laneCoord(v.move.to, v.out), timeTo(v, d), timeTo(v, d + 3 + 2 * v.half), !v.yielding);
 
   // Must v, pulled into the intersection to turn, wait there: for people crossing its way out (`peds`) or, turning
-  // left, for oncoming traffic?
-  const holdsOn = (v, peds) => peds || (v.move.turn === 'L' && yieldOncoming(v.edge.opposite, false));
+  // across them, for oncoming traffic?
+  const holdsOn = (v, peds) => peds || (v.move.turn === ACROSS && yieldOncoming(v.edge.opposite, false));
 
   // Of two vehicles on the same road headed for the same lane, the one whose front is nearer the line goes first (by
   // the front: a bus waiting at the line goes before the cars that pull up beside it)
@@ -878,9 +882,9 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     // traffic, short of the oncoming lanes until there is a gap. The light changing stops both for it at the latest.
     const c = connector(e, v.lane, f, j);
     const first = n.signal && (!v.isPolice || phase === 'green') && m.turn !== 'S' && !lead;
-    const across = m.turn === 'L' && !!e.opposite;
+    const across = m.turn === ACROSS && !!e.opposite;
     const wait = first ? (across ? yieldPoint(v, c, e) : c.len - 3 - v.half) : -1; // < 0: no room inside to wait
-    if (m.turn === 'L' ? across && wait < 0 && yieldOncoming(e.opposite, v.wait > 8, v) : e.opposite && e.opposite.lefts > 0) return false;
+    if (m.turn === ACROSS ? across && wait < 0 && yieldOncoming(e.opposite, v.wait > 8, v) : e.opposite && e.opposite.lefts > 0) return false;
     if ((n.signal ? v.isPolice && phase !== 'green' : e.axisIndex !== 0) && yieldToCrossTraffic(v, n)) return false;
     // nobody on the crosswalks while it passes over them, on the way in and on the way out, and a free place to
     // clear the intersection to, taking turns with lanes merging into it

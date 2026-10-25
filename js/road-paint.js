@@ -101,8 +101,10 @@ function buildRoadPaint(scene, network) {
     // street merely bends: a shape node of the centreline streets)
     for (const f of back ? [e, back] : [e]) {
       if (f.to.shape) continue;
-      const left = back ? Math.max(0, f.lanes[0] - 1.8) : -f.half;
-      across(f, f.len - 0.35, left + 0.1, f.half - 0.1, 0.45, WHITE);
+      // (a two-way road's stop bar runs on the side its traffic keeps to: the right, or the left)
+      const left = back ? (network.keepLeft ? -f.half : Math.max(0, f.lanes[0] - 1.8)) : -f.half;
+      const right = back && network.keepLeft ? Math.min(0, f.lanes[f.lanes.length - 1] + 1.8) : f.half;
+      across(f, f.len - 0.35, left + 0.1, right - 0.1, 0.45, WHITE);
     }
 
     // Continental crosswalks curb to curb, between the stop lines and the intersections at both ends
