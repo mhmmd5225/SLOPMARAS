@@ -7,7 +7,7 @@ import { GEO } from './geodata.js';
 // The street details of a city built from OpenStreetMap, built by main.js instead of street-details.js's New York
 // furniture: the city's own trees (GEO.trees, an inventory such as NParks' for Singapore: tools/city/build.mjs), each
 // where it stands on a sidewalk, median, verge or park lawn, grown to its height, its crown shape from its family
-// (shapes without a model in js/trees.js, such as palms, aren't planted). Returns what main.js and the audio take from
+// (palms included; a shape without a model in js/trees.js isn't planted). Returns what main.js and the audio take from
 // street-details.js: { group, footprints, signalClock, audioSignals, update }.
 
 const SIDEWALK_Y = 0.22;

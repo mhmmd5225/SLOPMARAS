@@ -445,7 +445,18 @@ SPECIES.push(
   // 5: Weeping: the elm's arching vase, densely leaved (crape myrtles, trumpet trees)
   tropical(SPECIES[2], 'weeping', {
     tints: [0x3b6124, 0x48702b, 0x33561f]
-  })
+  }),
+  // 6: Palm: a tall, bare, slightly leaning trunk; at its top a dozen long fronds spiral out, from upright to arching
+  //    down, their leaflets hanging off both sides (the locust's pinnate sprays)
+  {
+    name: 'palm', tile: 1, fronds: true,
+    trunk: { r: 0.2, top: 9.2, lean: 0.06, segs: 8 },
+    limbs: { n: 14, y: [8.7, 9.15], tilt: [0.3, 1.55], len: [3.2, 4.2], r: 0.16, up: 0, out: 0.02, droop: 0.13, jitter: 0.05, segs: 8 },
+    branches: { n: 0, t: [0, 1], angle: [0, 0], len: [0, 0], up: 0, out: 0, droop: 0, jitter: 0, segs: 1 },
+    twigs: { n: 0, t: [0, 1], angle: [0, 0], len: [0, 0], up: 0, out: 0, droop: 0, jitter: 0, segs: 1 },
+    cards: { perTwig: 0, scale: [1.2, 1.5], droop: 0 },
+    tints: [0x4f7a2a, 0x5e8a30, 0x456e25]
+  }
 );
 
 // =====================================================================================================================
@@ -533,7 +544,7 @@ function growTree(sp, seed) {
     const limb = growBranch(base.p, dir, len, base.r * L.r, 0.035, L.segs, L, rng, 1);
     branches.push(limb);
 
-    const nb = B.n + (rng() < 0.5 ? 1 : 0);
+    const nb = sp.fronds ? 0 : B.n + (rng() < 0.5 ? 1 : 0); // (a palm's limbs are its fronds: leaves, no branches)
     let baz = R(0, Math.PI * 2);
     for (let j = 0; j < nb; j++) {
       const bt = lerp(B.t[0], B.t[1], (j + R(0.15, 0.85)) / nb);
@@ -733,7 +744,26 @@ function placeCards(sp, branches, lod, tileMeters, rng, crown) {
     return { up, face: face.normalize() };
   };
   const size = tileMeters[sp.tile];
-  if (lod === 0) {
+  if (sp.fronds && lod < 2) {
+    // A palm's fronds: overlapping sprays strung along each, lying along it, its leaflets hanging down both sides (two
+    // per station tilted into an inverted V about it up close; fewer, larger ones further off)
+    const step = lod === 0 ? 0.32 : 0.7;
+    const worldUp = new V3(0, 1, 0);
+    for (const b of branches) {
+      if (b.level !== 1) continue;
+      for (let s = 0.25; s < b.len - 0.2; s += step * R(0.85, 1.15)) {
+        const a = along(b, s / b.len);
+        const flat = worldUp.clone().addScaledVector(a.d, -a.d.y);
+        if (flat.lengthSq() < 1e-4) flat.set(1, 0, 0);
+        flat.normalize();
+        for (const roll of lod === 0 ? [-1.05, 1.05] : [-0.8, 0.8]) {
+          const face = flat.clone().applyAxisAngle(a.d, roll + R(-0.15, 0.15));
+          const k = lod === 0 ? R(sp.cards.scale[0], sp.cards.scale[1]) : R(1.5, 1.8);
+          cards.push({ at: a.p, up: a.d.clone(), face, size: size * k, tile: sp.tile });
+        }
+      }
+    }
+  } else if (lod === 0) {
     for (const b of branches) {
       if (b.level !== 3) continue;
       const n = sp.cards.perTwig;
@@ -792,7 +822,7 @@ function buildTreeGeometries(speciesIndex, variant, tileMeters) {
   // Crown from the full-detail foliage: card anchors pushed out by half a card
   const rngC = mulberry32(seed ^ 0x5bd1e995);
   const tips = [];
-  for (const b of branches) if (b.level === 3) tips.push(b.pts[b.pts.length - 1]);
+  for (const b of branches) if (b.level === (sp.fronds ? 1 : 3)) tips.push(b.pts[b.pts.length - 1]);
   const roughCrown = makeCrown(tips);
   const cards0 = placeCards(sp, branches, 0, tileMeters, rngC, roughCrown);
   const pts = [];
