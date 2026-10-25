@@ -388,6 +388,27 @@ class CityAudioSystem {
     if (this.emit('horn', { id: entity, ...entity.position, heading: entity.heading, seed: 4 }, { intensity: 0.7 })) this.lastHorn = now;
   }
 
+  // A short in-car chime, not placed in the street: 'erp', the in-vehicle unit's double beep; 'camera', a shutter
+  chime(kind = 'erp') {
+    if (!this.ready || !this.enabled || this.context?.state !== 'running') return;
+    const ctx = this.context;
+    const now = ctx.currentTime;
+    const notes = kind === 'erp' ? [[0, 2350, 0.09], [0.17, 2350, 0.09]] : [[0, 3200, 0.02], [0.05, 1400, 0.04]];
+    for (const [t, freq, len] of notes) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = kind === 'erp' ? 'sine' : 'square';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, now + t);
+      gain.gain.linearRampToValueAtTime(0.16, now + t + 0.008);
+      gain.gain.setValueAtTime(0.16, now + t + len);
+      gain.gain.linearRampToValueAtTime(0, now + t + len + 0.02);
+      osc.connect(gain).connect(this.master);
+      osc.start(now + t);
+      osc.stop(now + t + len + 0.05);
+    }
+  }
+
   update(dt, elapsed, camera, night = false) {
     if (!this.ready || !this.enabled || this.context?.state !== 'running' || document.hidden) return;
     this.accumulator += dt;

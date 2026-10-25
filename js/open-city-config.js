@@ -8,7 +8,7 @@ import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField
 // Broadway, the piers, bridges, boroughs and landmarks), which the builders skip or do without.
 
 const F = GEO.frame;
-const CITY = { id: GEO.city, name: GEO.name, short: GEO.short, open: true, driveSide: F.driveSide || 'right', vehicles: vehiclesFor(GEO.vehicles) };
+const CITY = { id: GEO.city, name: GEO.name, short: GEO.short, open: true, driveSide: F.driveSide || 'right', units: F.units === 'imperial' ? 'imperial' : 'metric', vehicles: vehiclesFor(GEO.vehicles) };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Land: the land masses ({ outer, holes } outlines, [{ x, z }]) and the detailed area (blocks stand inside it)

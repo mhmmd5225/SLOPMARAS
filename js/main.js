@@ -194,6 +194,8 @@ async function initApp() {
     soundButton.querySelector('use').setAttribute('href', audioSystem.enabled ? '#i-sound' : '#i-sound-off');
   }
   soundButton?.addEventListener('click', () => audioSystem.setEnabled(!audioSystem.enabled));
+  // (a city built from OpenStreetMap: its gantries & cameras learn the junctions' signals and get the in-car chimes)
+  if (streetDetails.attach) streetDetails.attach(trafficSystem.network, audioSystem);
   updateSoundButton();
   // pagehide also covers navigation away on mobile; preserve the context across back-forward cache restores.
   window.addEventListener('pagehide', (event) => {
@@ -327,6 +329,11 @@ async function initApp() {
   };
   // Boosted top speeds in mph (controllers.js caps them at 8.2, 36, 19 & 52 m/s): full scale of the speed meter
   const topSpeedMph = { person: 18, car: 81, cyclist: 43, helicopter: 116 };
+  // Speed & altitude in the city's units: mph & ft, or km/h & m
+  const metric = CITY.units === 'metric';
+  for (const el of document.querySelectorAll('.gauge-unit')) el.textContent = metric ? 'km/h' : 'mph';
+  const altUnit = document.getElementById('hud-altitude-unit');
+  if (altUnit) altUnit.textContent = metric ? 'm' : 'ft';
 
   function renderControlHints(mode) {
     if (!elControlsHint) return;
@@ -760,7 +767,7 @@ async function initApp() {
     if (boroughs.update) boroughs.update(elapsed); // Roosevelt Island Tramway cabins
     cityBlocks.update(cameraSystem.currentPos.x, cameraSystem.currentPos.z);
     if (cityBlocks.updateLights) cityBlocks.updateLights(cameraSystem.camera);
-    if (streetDetails.update) streetDetails.update(cameraSystem.camera);
+    if (streetDetails.update) streetDetails.update(cameraSystem.camera, controllerManager.getActiveEntity());
     lightingSystem.update(cameraSystem.currentPos);
     mapSystem.update();
     audioSystem.update(dt, elapsed, cameraSystem.camera, lightingSystem.activePresetId === 'midnight');
@@ -814,15 +821,15 @@ async function initApp() {
 
       const activeEnt = controllerManager.getActiveEntity();
       const mode = controllerManager.activeMode;
-      const mph = Math.round(Math.abs(activeEnt.speed) * 2.237);
-      const altFt = Math.max(0, Math.round(activeEnt.position.y * 3.281));
+      const mph = Math.round(Math.abs(activeEnt.speed) * (metric ? 3.6 : 2.237)); // (km/h in a metric city)
+      const altFt = Math.max(0, Math.round(activeEnt.position.y * (metric ? 1 : 3.281)));
 
       if (elFps) {
         elFps.textContent = String(currentFps);
         elFps.className = currentFps >= 50 ? 'fps-ok' : currentFps >= 30 ? 'fps-warn' : 'fps-bad';
       }
       if (elSpeed) elSpeed.textContent = String(mph);
-      if (elSpeedMeter) elSpeedMeter.style.transform = `scaleX(${Math.min(1, mph / (topSpeedMph[mode] || 80))})`;
+      if (elSpeedMeter) elSpeedMeter.style.transform = `scaleX(${Math.min(1, mph / ((topSpeedMph[mode] || 80) * (metric ? 1.609 : 1)))})`;
       document.body.classList.toggle('is-boosting', controllerManager.keys.boost && mph > 0);
       if (elAltitude) elAltitude.textContent = altFt.toLocaleString('en-US');
       // The street corner of the player on the follow cameras, of the camera itself on the scenic ones

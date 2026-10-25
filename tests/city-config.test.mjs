@@ -26,7 +26,7 @@ test('Singapore is the default city and New York is ?city=nyc', () => {
   assert.equal(inCity('', 'return config.CITY.id;'), 'singapore');
   assert.equal(inCity('atlantis', 'return config.CITY.id;'), 'singapore', 'an unknown city falls back to the default');
   const out = inCity('nyc', 'const { vehicles, ...city } = config.CITY; return { city, taxi: vehicles.taxis[0], blocks: config.BLOCKS.length, same: config.BLOCKS === nyc.BLOCKS };');
-  assert.deepEqual(out.city, { id: 'nyc', name: 'New York', short: 'NY', open: false, driveSide: 'right' });
+  assert.deepEqual(out.city, { id: 'nyc', name: 'New York', short: 'NY', open: false, driveSide: 'right', units: 'imperial' });
   assert.equal(out.taxi, 0xffbe14, 'yellow cabs');
   assert.ok(out.same && out.blocks > 2000);
 });
@@ -53,7 +53,7 @@ test('a city built from OpenStreetMap serves the whole city-config.js interface'
   `);
   assert.ok(out.sameNames, 'the same exports as nyc-config.js');
   assert.deepEqual(out.missing, []);
-  assert.deepEqual(out.city, { id: 'singapore', name: 'Singapore', short: 'SG', open: true, driveSide: 'left' });
+  assert.deepEqual(out.city, { id: 'singapore', name: 'Singapore', short: 'SG', open: true, driveSide: 'left', units: 'metric' });
   assert.ok(out.taxis.length > 1 && !out.taxis.includes(0xffbe14), "Singapore's taxi fleet");
   assert.ok(out.blocks > 1000 && out.roads > 500 && out.land > 0);
   assert.equal(out.spawnInBlock, false, 'the start is on a street');
@@ -89,8 +89,9 @@ test("Singapore's streets drive as one network", () => {
     console.info = () => {};
     const net = buildRoadNetwork(sidewalks, []);
     const uturns = net.edges.reduce((n, e) => n + e.moves.filter((m) => m.uturn).length, 0);
-    return { edges: net.edges.length, uturns };
+    return { edges: net.edges.length, uturns, signals: net.nodes.filter((n) => n.signal).length };
   `);
   assert.ok(out.edges > 8000, `${out.edges} connected edges`);
   assert.ok(out.uturns > 0, 'dead ends turn round');
+  assert.ok(out.signals >= 20, 'the junctions its red light cameras watch have signals');
 });

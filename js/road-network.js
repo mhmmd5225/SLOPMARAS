@@ -1097,12 +1097,18 @@ function buildRoadNetwork(sidewalks, obstacles) {
   nodes = nodes.filter((n) => n.in && n.out);
   nodes.forEach((n, i) => (n.id = i));
 
-  // 8. Signalized intersections are exactly the ones with signal heads (street-details.js)
+  // 8. Signalized intersections are exactly the ones with signal heads (street-details.js), and in a city built from
+  //    OpenStreetMap the junctions its red light cameras watch (GEO.enforcement; open-city-enforcement.js heads them)
   for (const a of AVENUES) {
     for (const s of STREETS) {
       const n = nodes.find((m) => Math.abs(m.x - a.x) < 4 && Math.abs(m.z - s.z) < 4);
       if (n) n.signal = true;
     }
+  }
+  const watched = OPEN_CITY && GEO.enforcement ? GEO.enforcement.redLight : [];
+  for (let i = 0; i < watched.length; i += 4) {
+    const x = watched[i] / 10, z = watched[i + 1] / 10;
+    for (const n of nodes) if (!n.shape && (n.in.length + n.out.length) > 2 && Math.hypot(n.x - x, n.z - z) < 30) n.signal = true;
   }
 
   // 9. Sides & right of way at each node, for traffic.js. Its arms are its sides (one crosswalk and approach each): a

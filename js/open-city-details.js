@@ -1,14 +1,16 @@
 import * as THREE from 'three/webgpu';
 import { createTreeField, TREE_SPECIES } from './trees.js';
-import { blockAt } from './city-config.js';
+import { blockAt, CITY } from './city-config.js';
+import { createEnforcement } from './open-city-enforcement.js';
 import { GEO } from './geodata.js';
 
 // js/open-city-details.js
 // The street details of a city built from OpenStreetMap, built by main.js instead of street-details.js's New York
 // furniture: the city's own trees (GEO.trees, an inventory such as NParks' for Singapore: tools/city/build.mjs), each
 // where it stands on a sidewalk, median, verge or park lawn, grown to its height, its crown shape from its family
-// (palms included; a shape without a model in js/trees.js isn't planted). Returns what main.js and the audio take from
-// street-details.js: { group, footprints, signalClock, audioSignals, update }.
+// (palms included; a shape without a model in js/trees.js isn't planted), and its road pricing gantries & traffic
+// cameras (open-city-enforcement.js). Returns what main.js and the audio take from street-details.js: { group,
+// footprints, signalClock, audioSignals, update(camera, player) }, and attach(network, audio) for the enforcement.
 
 const SIDEWALK_Y = 0.22;
 const LAWN_Y = 0.235;
@@ -40,9 +42,18 @@ function buildOpenCityDetails(scene) {
     }
   }
   if (sites.length) group.add(createTreeField(scene, sites).group);
+  const enforcement = createEnforcement(group, { keepLeft: CITY.driveSide === 'left' });
   scene.add(group);
   console.info(`[cityDetails] ${sites.length} trees${trees ? ` (${trees.credit})` : ''}`);
-  return { group, footprints: [], signalClock: { value: 0 }, audioSignals: [], update: null };
+  const signalClock = { value: 0 }; // main.js keeps it at the traffic's time
+  return {
+    group,
+    footprints: [],
+    signalClock,
+    audioSignals: [],
+    update: enforcement ? (camera, player) => enforcement.update(signalClock.value, player) : null,
+    attach: enforcement ? (network, audio) => enforcement.attach(network, audio) : null
+  };
 }
 
 export { buildOpenCityDetails };

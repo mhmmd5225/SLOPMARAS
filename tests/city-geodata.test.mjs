@@ -110,6 +110,16 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
       square(63, -150, -150, 8, { 'building:part': 'yes', height: '50' }),
       square(64, -60, -220, 6, { building: 'roof' })
     ]);
+    // An ERP gantry on North Road, a speed camera by East Street, a red light camera on North Road's southern approach
+    const node = (id, [lon, lat], tags) => ({ type: 'node', id, lon, lat, tags });
+    write('enforcement', [
+      node(70, ll(0, 120), { highway: 'toll_gantry', name: 'ERP' }),
+      node(71, ll(100, 0), { highway: 'speed_camera', maxspeed: '40' }),
+      { type: 'relation', id: 72, tags: { type: 'enforcement', enforcement: 'traffic_signals' }, members: [
+        { type: 'node', role: 'from', ...Object.fromEntries([['lon', ll(0, 60)[0]], ['lat', ll(0, 60)[1]]]) },
+        { type: 'node', role: 'to', ...Object.fromEntries([['lon', ll(0, 10)[0]], ['lat', ll(0, 10)[1]]]) }
+      ] }
+    ]);
     const city = {
       id: 'testcity', name: 'Test City', origin: { lat: LAT0, lon: LON0, label: 'the crossing' }, bearing: 'auto',
       detail: [LAT0 - 0.0032, LON0 - 0.0032, LAT0 + 0.0032, LON0 + 0.0032], margin: 0.001, sidewalk: 5, strip: 6, driveSide: 'left',
@@ -139,6 +149,12 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
     assert.equal(ns.length, 2);
     assert.ok(ns.every((l) => l[4] === 4 && l[5] === 0 && RG.classes[l[7]] === 'primary' && l[8] === 0));
     assert.ok(ew.every((l) => l[5] === 1 && RG.nodes[l[1] * 2] > RG.nodes[l[0] * 2]), 'one-way eastbound along its links');
+    // road pricing & cameras
+    const E = GEO.enforcement;
+    assert.deepEqual([E.gantries.length / 2, E.speed.length / 3, E.redLight.length / 4], [1, 1, 1]);
+    assert.ok(Math.abs(E.gantries[0] / 10) < 1 && Math.abs(E.gantries[1] / 10 - 120) < 1);
+    assert.equal(E.speed[2], 40, 'the speed limit');
+    assert.deepEqual([E.redLight[2], E.redLight[3]], [0, -100], 'watching the northbound approach (towards -z)');
     // buildings: [rings, top dm, bottom dm, type, per ring: points, dx dz (dm) from the point before...]
     const B = GEO.buildings, built = [];
     for (let i = 0, fx = 0, fz = 0; i < B.data.length;) {
