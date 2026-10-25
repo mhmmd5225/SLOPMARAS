@@ -99,7 +99,8 @@ function nearestEdgeSearch(edges, x0, z0, w, h) {
 // Blocks of the land inside [x0, x1] x [z0, z1]: `fillLand(R)` sets the buildable cells of the res-metre raster R to 1,
 // `roads` are capsules { x0, z0, x1, z1, r } (r: half the curb-to-curb width) cut out of it, `sidewalk` the property line's
 // distance in from the curb. Returns the blocks, the raster and its labels (block.label) for later per-block lookups.
-export function extractBlocks({ x0: X0, z0: Z0, x1: X1, z1: Z1, res: RES = 1, sidewalk: SIDEWALK, fillLand, roads, log = () => {} }) {
+// With `lawns`, every block also gets the outlines of the land inside its property line (block.lawns: rings).
+export function extractBlocks({ x0: X0, z0: Z0, x1: X1, z1: Z1, res: RES = 1, sidewalk: SIDEWALK, fillLand, roads, lawns = false, log = () => {} }) {
   const R = new Raster(X0, Z0, X1, Z1, RES);
   fillLand(R);
   const W = R.w, H = R.h, D = R.d;
@@ -343,6 +344,21 @@ export function extractBlocks({ x0: X0, z0: Z0, x1: X1, z1: Z1, res: RES = 1, si
       frames,
       fill: propArea ? Math.round((covered / propArea) * 100) / 100 : 0
     });
+  }
+  if (lawns) {
+    // the property regions' outlines, by the block they lie in (each region a 4-connected component of `prop`)
+    const regions = labelComponents(prop, W, H);
+    const byLabel = new Map(blocks.map((b) => [b.label, b]));
+    for (const b of blocks) b.lawns = [];
+    for (const c of regions.comps) {
+      if (c.n * RES * RES < 20) continue;
+      const b = byLabel.get(lab[c.start]);
+      if (!b) continue;
+      let ring = rdpRing(destair(traceLabel(regions.lab, W, H, c, R.x0, R.z0, RES), RES * 1.5), 0.6);
+      if (ring.length < 3) continue;
+      if (ringArea(ring) > 0) ring.reverse();
+      b.lawns.push(ring);
+    }
   }
   log(`${blocks.length} blocks (${blocks.filter((b) => b.rect).length} rectangular, ${blocks.filter((b) => !b.rects.length).length} without lots); ${small} specks dropped`);
   log(`${blocks.filter((b) => b.frames).length} irregular blocks with frontage frames (${blocks.reduce((t, b) => t + (b.frames ? b.frames.length : 0), 0)} frames)`);

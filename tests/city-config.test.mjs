@@ -67,6 +67,29 @@ test('a city built from OpenStreetMap serves the whole city-config.js interface'
   assert.ok(out.styled > 300, 'neighbourhoods give blocks their building styles');
 });
 
+test("Singapore's lawns stay inside its blocks, off the roads", () => {
+  const out = inCity('singapore', `
+    const { GEO } = await import('./js/geodata.js');
+    const L = GEO.lawns;
+    let rings = 0, points = 0, outside = 0;
+    for (let i = 0, fx = 0, fz = 0; i < L.length;) {
+      const n = L[i++];
+      rings++;
+      let px = fx, pz = fz;
+      for (let k = 0; k < n; k++) {
+        px += L[i++]; pz += L[i++];
+        if (!k) { fx = px; fz = pz; }
+        points++;
+        if (!config.blockAt(px / 10, pz / 10)) outside++;
+      }
+    }
+    return { rings, points, outside };
+  `);
+  assert.ok(out.rings > 500, `${out.rings} lawns`);
+  // a corner can sit on its curb's raster step, a hair outside the traced outline
+  assert.ok(out.outside / out.points < 0.01, `${out.outside} of ${out.points} lawn corners outside every block`);
+});
+
 test("every building style a city's neighbourhoods name is one buildings.js builds", async () => {
   const buildings = fs.readFileSync(new URL('../js/buildings.js', import.meta.url), 'utf8');
   const styles = buildings.match(/const OPEN_STYLES = \{([^]*?)\n  \};/)[1];

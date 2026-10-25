@@ -2636,14 +2636,22 @@ function buildOpenCityGrid(scene) {
     group.add(deck);
   }
 
-  // Lawn over the sidewalk slab: in parks a walk's width in from the curb, elsewhere inside the sidewalks (the ground the
-  // buildings and the trees stand on)
+  // Lawn over the sidewalk slab inside every block's property line (GEO.lawns, traced by tools/city/build.mjs: the
+  // ground the buildings and the trees stand on)
   const lawnMat = createParkLawnMaterial(false);
   const lawnGeos = [];
-  for (const b of BLOCKS) {
-    if (b.median) continue;
-    const inner = offsetPolygonInward(b.poly, b.park > 0.6 ? 3.0 : sidewalk);
-    if (inner) lawnGeos.push(createFlatPolygonMesh(inner, 0.235, lawnMat).geometry);
+  const L = GEO.lawns || [];
+  for (let i = 0, fx = 0, fz = 0; i < L.length;) {
+    const n = L[i++];
+    const ring = [];
+    let px = fx, pz = fz;
+    for (let k = 0; k < n; k++) {
+      px += L[i++];
+      pz += L[i++];
+      ring.push({ x: px / 10, z: pz / 10 });
+      if (!k) { fx = px; fz = pz; }
+    }
+    lawnGeos.push(createFlatPolygonMesh(ring, 0.235, lawnMat).geometry);
   }
   for (let i = 0; i < lawnGeos.length; i += 400) {
     const m = new THREE.Mesh(mergeGeometries(lawnGeos.slice(i, i + 400), false), lawnMat);
