@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
+import zlib from 'node:zlib';
 import { makeFrame, gridBearing } from '../tools/city/frame.mjs';
 import { roadAttrs, streetPieces, coastLand } from '../tools/city/osm.mjs';
 import { buildCity } from '../tools/city/build.mjs';
+import { decodeTIFF, groundFrom } from '../tools/city/terrain.mjs';
 
 const LAT0 = 1.3, LON0 = 103.8;
 const way = (id, nodes, coords, tags) => ({ type: 'way', id, nodes, geometry: coords.map(([lon, lat]) => ({ lon, lat })), tags });
@@ -198,4 +200,102 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A little-endian, tiled, single-band float32 GeoTIFF as Copernicus GLO-30 writes them: DEFLATE with the floating-point
+// predictor, pixel (0, 0)'s corner tied to (lon0 − dx / 2, lat0 + dy / 2)
+function writeTIFF(w, h, tw, th, value, { lon0, lat0, dx, dy }) {
+  const tiles = [];
+  for (let ty = 0; ty < Math.ceil(h / th); ty++) for (let tx = 0; tx < Math.ceil(w / tw); tx++) {
+    const raw = Buffer.alloc(tw * th * 4);
+    const b = Buffer.alloc(4);
+    for (let y = 0; y < th; y++) {
+      const row = y * tw * 4;
+      for (let x = 0; x < tw; x++) {
+        b.writeFloatBE(value(Math.min(tx * tw + x, w - 1), Math.min(ty * th + y, h - 1)));
+        for (let k = 0; k < 4; k++) raw[row + k * tw + x] = b[k];
+      }
+      for (let i = tw * 4 - 1; i > 0; i--) raw[row + i] = (raw[row + i] - raw[row + i - 1]) & 255;
+    }
+    tiles.push(zlib.deflateSync(raw));
+  }
+  const n = tiles.length;
+  const entries = [
+    [256, 3, [w]], [257, 3, [h]], [258, 3, [32]], [259, 3, [8]], [262, 3, [1]], [277, 3, [1]], [317, 3, [3]],
+    [322, 3, [tw]], [323, 3, [th]], [324, 4, null], [325, 4, tiles.map((t) => t.length)], [339, 3, [3]],
+    [33550, 12, [dx, dy, 0]], [33922, 12, [0, 0, 0, lon0 - dx / 2, lat0 + dy / 2, 0]], [34735, 3, [1, 1, 0, 1, 1025, 0, 1, 1]]
+  ];
+  const size = { 3: 2, 4: 4, 12: 8 };
+  const ifdAt = 8, ifdLen = 2 + entries.length * 12 + 4;
+  let extra = ifdAt + ifdLen;
+  const blobs = [];
+  const placed = entries.map(([tag, type, values]) => {
+    const count = values ? values.length : n;
+    const bytes = count * size[type];
+    if (bytes <= 4) return { tag, type, count, values, at: null };
+    const at = extra;
+    extra += bytes;
+    blobs.push({ at, type, values, count });
+    return { tag, type, count, values, at };
+  });
+  let dataAt = extra;
+  const offsets = tiles.map((t) => { const o = dataAt; dataAt += t.length; return o; });
+  for (const p of placed) if (p.tag === 324) { p.values = offsets; for (const b of blobs) if (b.at === p.at) b.values = offsets; }
+  const buf = Buffer.alloc(dataAt);
+  buf.write('II', 0, 'ascii');
+  buf.writeUInt16LE(42, 2);
+  buf.writeUInt32LE(ifdAt, 4);
+  buf.writeUInt16LE(entries.length, ifdAt);
+  const put = (type, o, v) => (type === 3 ? buf.writeUInt16LE(v, o) : type === 4 ? buf.writeUInt32LE(v, o) : buf.writeDoubleLE(v, o));
+  placed.forEach((p, i) => {
+    const e = ifdAt + 2 + i * 12;
+    buf.writeUInt16LE(p.tag, e);
+    buf.writeUInt16LE(p.type, e + 2);
+    buf.writeUInt32LE(p.count, e + 4);
+    if (p.at === null) p.values.forEach((v, k) => put(p.type, e + 8 + k * size[p.type], v));
+    else buf.writeUInt32LE(p.at, e + 8);
+  });
+  for (const b of blobs) b.values.forEach((v, k) => put(b.type, b.at + k * size[b.type], v));
+  tiles.forEach((t, k) => t.copy(buf, offsets[k]));
+  return buf;
+}
+
+test('a Copernicus GeoTIFF decodes to its metres and its pixels\' centres', () => {
+  const value = (x, y) => 500 + x * 0.25 - y * 1.5 + (x === 37 && y === 21 ? 0.0625 : 0);
+  const geo = { lon0: 36, lat0: 38, dx: 1 / 3600, dy: 1 / 3600 };
+  const t = decodeTIFF(writeTIFF(70, 50, 32, 16, value, geo));
+  assert.equal(t.w, 70);
+  assert.equal(t.h, 50);
+  for (const [x, y] of [[0, 0], [31, 15], [32, 16], [37, 21], [69, 49], [45, 3]]) assert.equal(t.at(x, y), Math.fround(value(x, y)), `pixel ${x}, ${y}`);
+  assert.equal(t.at(-5, 60), Math.fround(value(0, 49)), 'clamped to the edge');
+  assert.ok(Math.abs(t.lon0 - 36) < 1e-12 && Math.abs(t.lat0 - 38) < 1e-12, 'the first pixel is centred on the degree lines');
+});
+
+test('the bare ground: mapped buildings cut out of a surface model, the slope under them kept', () => {
+  const frame = makeFrame({ lat0: 37.5, lon0: 36.9 });
+  const ground = (x, z) => 0.08 * x - 0.03 * z;
+  // the surface model: the sloping ground, a mapped 20 m building on it 120 × 100 m (wider than the opening: only its
+  // footprint takes it out) and an unmapped 15 m one 20 m across (only the opening does)
+  const inBuilding = (x, z) => x > 60 && x < 180 && z > -50 && z < 50;
+  const unmapped = (x, z) => Math.hypot(x + 150, z - 80) < 10;
+  const sample = (lon, lat) => {
+    const [x, z] = frame.toWorld(lon, lat);
+    return 600 + ground(x, z) + (inBuilding(x, z) ? 20 : 0) + (unmapped(x, z) ? 15 : 0);
+  };
+  const footprints = [[[60, -50], [180, -50], [180, 50], [60, 50]]];
+  const worst = (options) => {
+    const g = groundFrom(sample, frame, { x0: -300, z0: -300, x1: 300, z1: 300 }, 30, 600, { dilate: 6, open: 30, sigma: 8, ...options });
+    assert.equal(g.cols, 21);
+    assert.equal(g.rows, 21);
+    let w = 0;
+    for (let j = 3; j < g.rows - 3; j++) for (let i = 3; i < g.cols - 3; i++) {
+      w = Math.max(w, Math.abs(g.v[j * g.cols + i] - ground(g.x0 + i * g.cell, g.z0 + j * g.cell)));
+    }
+    return { w, cut: g.cut };
+  };
+  const bare = worst({ footprints });
+  assert.ok(bare.w < 1, `within 1 m of the ground everywhere (off by ${bare.w.toFixed(2)} m)`);
+  assert.ok(bare.cut > 0 && bare.cut < 0.1, 'the building\'s cells were cut out');
+  assert.ok(worst({ footprints: [] }).w > 5, 'the opening alone leaves the mapped building');
+  assert.ok(worst({ footprints, open: 0 }).w > 5, 'the footprints alone leave the unmapped one');
 });

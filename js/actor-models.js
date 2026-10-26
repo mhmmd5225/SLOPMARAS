@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { cityUniforms } from './tsl-materials.js';
-import { NYC_VEHICLES } from './city-common.js';
+import { DEFAULT_VEHICLES } from './city-common.js';
 import {
   Fn,
   float,
@@ -973,7 +973,7 @@ const _carPlateTextures = new Map();
 
 // One small generated atlas serves every rear plate, with mipmaps for distant traffic: four plates (`plate`: the city's
 // plate colours & numbers, CITY.vehicles.plate)
-function carPlateTexture(plate = NYC_VEHICLES.plate) {
+function carPlateTexture(plate = DEFAULT_VEHICLES.plate) {
   const key = `${plate.bg}_${plate.ink}_${plate.labels.join('|')}`;
   if (_carPlateTextures.has(key)) return _carPlateTextures.get(key);
   const canvas = document.createElement('canvas');
@@ -1003,7 +1003,7 @@ function carPlateTexture(plate = NYC_VEHICLES.plate) {
  * Every mask is built once and shared by the colour, roughness, metalness & emissive graphs (TSL turns nodes used
  * more than once into temporaries), so the fragment shader evaluates each SDF a single time.
  */
-function createLoftedCarMaterial(spec, fixedColorHex = null, livery = NYC_VEHICLES) {
+function createLoftedCarMaterial(spec, fixedColorHex = null, livery = DEFAULT_VEHICLES) {
   const liveryKey = `${livery.taxiBadge}_${livery.taxiLettering}_${livery.taxiMedallion}_${livery.plate.front}_${livery.plate.labels.join('|')}`;
   const cacheKey = `${spec.name}_${fixedColorHex ?? 'instanced'}_${liveryKey}`;
   if (_carMaterialCache.has(cacheKey)) {
@@ -1523,7 +1523,7 @@ const _busLoftedMats = new Map();
  *   NY plates; black trims & light-grey roof pods
  */
 // `bus`: the city's bus livery (CITY.vehicles.bus)
-function createLoftedBusMaterial(bus = NYC_VEHICLES.bus) {
+function createLoftedBusMaterial(bus = DEFAULT_VEHICLES.bus) {
   const key = `${bus.body}_${bus.stripe}_${bus.ribbon}_${bus.skirt}`;
   if (_busLoftedMats.has(key)) return _busLoftedMats.get(key);
   const s = BUS_SPEC;

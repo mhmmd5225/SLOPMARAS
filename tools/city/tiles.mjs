@@ -9,7 +9,7 @@
 //     buildings: { types, data } as GEO.buildings (tools/city/build.mjs; outer rings only), relative to the tile's corner,
 //     roads: [class, width (dm), points..., dx dz (dm) from the point before (the first from the tile's corner)] runs
 //   }
-// and tiles/<city>/roads.json, the island's main roads for the maps (js/nyc-map.js), outside the detailed area:
+// and tiles/<city>/roads.json, the island's main roads for the maps (js/city-map.js), outside the detailed area:
 //   { classes, names, roads: [[class, name index or -1, x0, z0, then each point's dx dz (m) from the one before]] }
 import fs from 'node:fs';
 import path from 'node:path';

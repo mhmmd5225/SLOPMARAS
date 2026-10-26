@@ -3,15 +3,11 @@ import { pass, mrt, output, normalView, positionView, metalness, roughness, vec2
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
-import { getLocationLabel, isTypingInField, ROADS, NYC_LANDMARKS, TELEPORT_LOCATIONS, CITY, SPAWN, LAND_REGIONS } from './city-config.js';
+import { getLocationLabel, isTypingInField, ROADS, PLACE_LIST, TELEPORT_LOCATIONS, CITY, SPAWN, LAND_REGIONS } from './city-config.js';
 import { buildCityGrid } from './city-grid.js';
-import { buildLandmarks } from './landmarks.js';
-import { buildCityBlocks } from './buildings.js';
 import { buildOpenCityBuildings } from './open-city-buildings.js';
-import { buildSingaporeLandmarks } from './singapore-landmarks.js';
 import { CityTiles } from './city-tiles.js';
 import { createLandMask } from './city-tiles-build.js';
-import { buildStreetDetails } from './street-details.js';
 import { buildOpenCityDetails } from './open-city-details.js';
 import { createTrafficSystem, createHighwayTraffic } from './traffic.js';
 import { buildRoadPaint } from './road-paint.js';
@@ -20,37 +16,27 @@ import { TouchControls } from './touch-controls.js';
 import { GamepadControls } from './gamepad-controls.js';
 import { CameraSystem, CAMERA_PRESETS } from './cameras.js';
 import { LightingSystem } from './lighting.js';
-import { NYCMapSystem } from './nyc-map.js';
+import { CityMapSystem } from './city-map.js';
 import { setupSceneCulling, updateSceneCulling } from './scene-culling.js';
-import { HAS_TERRAIN, bakeTerrain, liftMaterials, collectLights, liftLights } from './terrain.js';
+import { HAS_TERRAIN, startTerrainBake, bakeTerrain, liftMaterials, collectLights, liftLights } from './terrain.js';
 import { CityAudioSystem } from './audio-system.js';
-import { Weather } from './weather.js';
 import { Navigator } from './navigation.js';
 import { setupNavigationUI } from './navigation-ui.js';
 
 // js/main.js
-// Main entry point for the city simulation (Singapore by default, ?city=nyc for New York) in Three.js WebGPURenderer &
-// TSL (three.js dev, see index.html)
+// Main entry point for the city simulation (Kahramanmaraş) in Three.js WebGPURenderer & TSL (three.js dev, see
+// index.html)
 
-// The page's words for the simulated city: index.html is written for Singapore, the default city; New York keeps the
-// page it always had
+// The page's words for the simulated city: index.html names it for the city built from OpenStreetMap
 function nameThePage() {
   const title = `Slop ${CITY.name}`;
-  const text = CITY.open
-    ? {
-      description: `A ${CITY.name} city simulation built with three.js: walk, drive, cycle or fly through its real streets.`,
-      map: `Full ${CITY.name} street map [M]`, radar: `Live ${CITY.name} street radar minimap`,
-      radarTitle: `Open the full ${CITY.name} street map [M]`, modal: `Full ${CITY.name} street map (interactive)`,
-      atlas: `${CITY.name} Street Atlas`, compass: 'True north · the map turns with the streets',
-      all: `All of ${CITY.name}`, fit: `Fit all of ${CITY.name}`
-    }
-    : {
-      description: 'Photorealistic GTA-style 3D Slop New York simulation built with Three.js WebGPURenderer and TSL shaders featuring complete Manhattan street map (125th St to Battery Park), third-person navigation (Person, Car, Cyclist, Helicopter), and 11 cinematic cameras at 60 FPS.',
-      map: 'Full New York City street map [M]', radar: 'Live NYC Street Radar Minimap',
-      radarTitle: 'Open the full New York City street map [M]', modal: 'Full New York City Interactive Street Map',
-      atlas: 'Manhattan Street Atlas', compass: "True north · Manhattan's street grid runs 29° east of it",
-      all: 'All of Manhattan (125th St to Battery Park)', fit: 'Fit all of Manhattan'
-    };
+  const text = {
+    description: `A ${CITY.name} city simulation built with three.js: walk, drive, cycle or fly through its real streets.`,
+    map: `Full ${CITY.name} street map [M]`, radar: `Live ${CITY.name} street radar minimap`,
+    radarTitle: `Open the full ${CITY.name} street map [M]`, modal: `Full ${CITY.name} street map (interactive)`,
+    atlas: `${CITY.name} Street Atlas`, compass: 'True north · the map turns with the streets',
+    all: `All of ${CITY.name}`, fit: `Fit all of ${CITY.name}`
+  };
   const set = (selector, fn) => { for (const el of document.querySelectorAll(selector)) fn(el); };
   document.title = title;
   set('meta[name="description"]', (el) => el.setAttribute('content', text.description));
@@ -113,32 +99,25 @@ async function initApp() {
   markInit('lighting');
 
   if (loadingStatus) {
-    loadingStatus.textContent = CITY.open ? `Constructing ${CITY.name}...` : 'Constructing Manhattan Grid, Landmarks & Streetscape...';
+    loadingStatus.textContent = `Constructing ${CITY.name}...`;
   }
 
-  // 3. Build Manhattan Geography, Iconic Landmarks, Blocks, Street Details & Traffic. A city built from OpenStreetMap
-  //    (city-config.js CITY.open) has its ground, blocks, trees and traffic, without New York's boroughs, landmarks &
-  //    street furniture
+  // 3. Build the city's ground, blocks, street details & traffic: its ground, blocks, trees and traffic, from
+  //    OpenStreetMap
   const cityGrid = buildCityGrid(scene);
+  // (its ground layers go to be cut along the ground's heights while the rest of the city is built: terrain.js)
+  startTerrainBake([cityGrid.group]);
   markInit('cityGrid');
-  const boroughs = CITY.open ? { colliders: [] } : (await import('./boroughs.js')).buildBoroughs(scene, { sidewalks: cityGrid.sidewalks });
-  markInit('boroughs');
-  const { colliders: landmarkColliders } = CITY.open ? { colliders: [] } : buildLandmarks(scene);
-  markInit('landmarks');
-  // (a city built from OpenStreetMap with its buildings mapped stands them as mapped; else they're generated on the lots)
-  const cityBlocks = (CITY.open && buildOpenCityBuildings(scene)) || buildCityBlocks(scene);
+  // (the buildings stand as mapped)
+  const cityBlocks = buildOpenCityBuildings(scene);
   markInit('blocks');
-  // Singapore's modelled landmarks (Marina Bay Sands, the Flyer) stand where their mapped outlines were left out
-  const cityLandmarks = CITY.open && CITY.id === 'singapore' ? buildSingaporeLandmarks(scene) : null;
-  if (cityLandmarks && cityBlocks.allBlocks[0]) cityBlocks.allBlocks[0].footprints.push(...cityLandmarks.footprints);
-  markInit('cityLandmarks');
   // The rest of the island (tools/city/tiles.mjs), streamed in tiles of buildings & main roads around the camera
-  const cityTiles = CITY.open ? new CityTiles(scene, { url: `./tiles/${CITY.id}/` }) : null;
-  if (cityTiles && !(await cityTiles.init())) cityTiles.index = null;
+  const cityTiles = new CityTiles(scene, { url: `./tiles/${CITY.id}/` });
+  if (!(await cityTiles.init())) cityTiles.index = null;
   markInit('islandTiles');
-  const allColliders = [...landmarkColliders, ...(cityLandmarks?.colliders || []), ...cityBlocks.colliders, ...boroughs.colliders, ...(cityGrid.colliders || [])];
+  const allColliders = [...cityBlocks.colliders, ...(cityGrid.colliders || [])];
 
-  const streetDetails = CITY.open ? buildOpenCityDetails(scene) : buildStreetDetails(scene);
+  const streetDetails = buildOpenCityDetails(scene);
   markInit('streetDetails');
   // Buildings turned along non-grid streets have oriented colliders whose world bounds reach past their lots: they stay
   // inside the property line anyway, so the road network (lanes & sidewalks) doesn't need them.
@@ -151,6 +130,8 @@ async function initApp() {
   markInit('traffic');
   const highwayTraffic = createHighwayTraffic(scene, cityGrid.highwayLanes);
   buildRoadPaint(scene, trafficSystem.network);
+  // (the road paint too: the street details wait for their signal heads, below)
+  startTerrainBake([scene.getObjectByName('RoadMarkings')].filter(Boolean));
   markInit('roadPaint');
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
@@ -172,7 +153,7 @@ async function initApp() {
   }
 
   // Reuse teleport placement so saved players return at rest, close to their last positions. Each city keeps its own.
-  const playerStateKey = CITY.open ? `${CITY.id}-player-state` : 'nyc-player-state';
+  const playerStateKey = `${CITY.id}-player-state`;
   let restored = false;
   try {
     const saved = JSON.parse(localStorage.getItem(playerStateKey));
@@ -187,9 +168,8 @@ async function initApp() {
       restored = true;
     }
   } catch { /* Missing or unavailable storage does not prevent playing. */ }
-  // A fresh session in a city built from OpenStreetMap: every mode starts at its street (controllers.js places them
-  // around 5th Ave & 37th St)
-  if (CITY.open && !restored) {
+  // A fresh session: every mode starts at its street
+  if (!restored) {
     // the car on the street, the cyclist behind it, the pedestrian on the kerb beside it, the helicopter overhead
     const fx = Math.sin(SPAWN.heading), fz = Math.cos(SPAWN.heading);
     const start = { car: [0, 0], cyclist: [-14, 0], person: [-6, 12], helicopter: [-40, 0] };
@@ -215,11 +195,8 @@ async function initApp() {
   cameraSystem.driverSide = CITY.driveSide === 'left' ? 1 : -1;
   const touchControls = new TouchControls(controllerManager);
   const soundButton = document.getElementById('btn-sound');
-  // A tropical city (Singapore) has its koels, cicadas and thunderstorms
-  const tropical = CITY.open && CITY.id === 'singapore';
   const audioSystem = new CityAudioSystem({ controllerManager, trafficSystem, highwayTraffic, streetDetails }, {
-    onStateChange: updateSoundButton,
-    tropics: tropical
+    onStateChange: updateSoundButton
   });
   function updateSoundButton() {
     if (!soundButton) return;
@@ -230,19 +207,6 @@ async function initApp() {
     soundButton.querySelector('use').setAttribute('href', audioSystem.enabled ? '#i-sound' : '#i-sound-off');
   }
   soundButton?.addEventListener('click', () => audioSystem.setEnabled(!audioSystem.enabled));
-  // Thunderstorms (js/weather.js): the storm button & [R]; each lightning flash's thunder follows at the speed of sound
-  const weather = tropical ? new Weather(scene, lightingSystem, { onLightning: (distance) => audioSystem.thunder(distance) }) : null;
-  const stormButton = document.getElementById('btn-storm');
-  if (stormButton && !weather) stormButton.remove();
-  function toggleStorm(immediate = false) {
-    if (!weather) return;
-    const on = !weather.stormy;
-    weather.setStorm(on, immediate);
-    stormButton?.setAttribute('aria-pressed', String(on));
-    stormButton?.classList.toggle('active', on);
-  }
-  stormButton?.addEventListener('click', () => toggleStorm());
-  if (weather && new URLSearchParams(location.search).has('storm')) toggleStorm(true);
   // (a city built from OpenStreetMap: its gantries & cameras learn the junctions' signals and get the in-car chimes)
   if (streetDetails.attach) streetDetails.attach(trafficSystem.network, audioSystem);
   updateSoundButton();
@@ -258,11 +222,11 @@ async function initApp() {
   // (scene-culling.js)
   // A city on its ground's heights (terrain.js): the static city is raised onto the ground once, here, before the
   // culling cuts it into cells and shadow stand-ins; what moves is raised in its vertex stage (below)
-  const terrainStats = bakeTerrain(['CityGrid', 'CityBuildings', 'CityStreetDetails', 'RoadMarkings'].map((name) => scene.getObjectByName(name)).filter(Boolean));
+  const terrainStats = await bakeTerrain(['CityGrid', 'CityBuildings', 'CityStreetDetails', 'RoadMarkings'].map((name) => scene.getObjectByName(name)).filter(Boolean));
   if (HAS_TERRAIN) console.info(`[terrain] baked ${terrainStats.meshes} meshes (+${terrainStats.triangles} triangles cut along the ground's), ${terrainStats.instanced} instanced meshes & ${terrainStats.lights} lamps in ${terrainStats.ms} ms`);
   markInit('terrain');
 
-  const cullingRoots = ['ManhattanCityGrid', 'CityGrid', 'ManhattanCityBlocks', 'ManhattanStreetDetails', 'ManhattanLandmarks', 'Boroughs']
+  const cullingRoots = ['CityGrid']
     .map((name) => scene.getObjectByName(name))
     .filter(Boolean);
   setupSceneCulling(scene, cullingRoots, lightingSystem.sunLight.shadow);
@@ -281,10 +245,8 @@ async function initApp() {
     scene.getObjectByName('StreetClusteredLights'),
     ...Object.values(controllerManager.entities).map((entity) => entity.mesh),
     controllerManager.entities.cyclist.helmet,
-    // Singapore's: the Flyer's wheel & capsules, Spectra's beams; the island tiles streamed in around the camera; rain
-    cityLandmarks?.group,
-    cityTiles?.group,
-    weather?.rain
+    // the island tiles streamed in around the camera
+    cityTiles?.group
   ].filter(Boolean);
   scene.updateMatrixWorld(true);
   scene.matrixWorldAutoUpdate = false;
@@ -346,10 +308,9 @@ async function initApp() {
   const renderPipeline = new THREE.RenderPipeline(renderer, colorGrade.outputNode);
 
   // 6. Wire UI Controls (Strictly using safe DOM APIs: textContent, classList, addEventListener)
-  // The teleport menu lists the city's destinations (city-config.js TELEPORT_LOCATIONS). A city built from
-  // OpenStreetMap offers only the cameras following the player and the auto-director (the scenic ones look at New
-  // York's landmarks).
-  const CAMERAS = CITY.open ? CAMERA_PRESETS.filter((p) => p.category === 'follow' || p.id === 'drone') : CAMERA_PRESETS;
+  // The teleport menu lists the city's destinations (city-config.js TELEPORT_LOCATIONS). The cameras offered are those
+  // following the player and the auto-director.
+  const CAMERAS = CAMERA_PRESETS.filter((p) => p.category === 'follow' || p.id === 'drone');
   const cameraOffered = (id) => CAMERAS.some((p) => p.id === id);
   const teleportPopover = document.getElementById('teleport-popover');
   if (teleportPopover) {
@@ -554,7 +515,7 @@ async function initApp() {
 
   // Where you are: the place's name over its street corner, drawn as a pair of NYC street-name signs
   const roadNames = new Set(ROADS.map((r) => r.name));
-  const placeNames = new Set(NYC_LANDMARKS.map((l) => l.name));
+  const placeNames = new Set(PLACE_LIST.map((l) => l.name));
   let locationText = '';
   function renderLocation(label) {
     if (!elLocation || label === locationText) return;
@@ -611,7 +572,7 @@ async function initApp() {
     return destination;
   }
 
-  const mapSystem = new NYCMapSystem({
+  const mapSystem = new CityMapSystem({
     controllerManager,
     cameraSystem,
     trafficSystem,
@@ -694,15 +655,6 @@ async function initApp() {
       case 'Digit7':
         selectCamera('pov', true);
         break;
-      case 'Digit8':
-        selectCamera('fifthAve', true);
-        break;
-      case 'Digit9':
-        selectCamera('timesSquare', true);
-        break;
-      case 'Digit0':
-        selectCamera('chryslerGCT', true);
-        break;
       case 'KeyT':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) selectCamera('taxi', true);
         break;
@@ -711,9 +663,6 @@ async function initApp() {
         break;
       case 'KeyH':
         if (hudToggleBtn) hudToggleBtn.click();
-        break;
-      case 'KeyR':
-        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) toggleStorm();
         break;
       case 'KeyN':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) audioSystem.setEnabled(!audioSystem.enabled);
@@ -830,7 +779,7 @@ async function initApp() {
   }
 
   // For poking at from the console (and the browser checks): the simulation's main systems
-  globalThis.slop = { scene, navigator: routeNavigator, trafficSystem, controllerManager, cameraSystem, lightingSystem, audioSystem, cityTiles, cityLandmarks, weather, mapSystem };
+  globalThis.slop = { scene, navigator: routeNavigator, trafficSystem, controllerManager, cameraSystem, lightingSystem, audioSystem, cityTiles, mapSystem };
 
   await precompileShaders();
   markInit('compile');
@@ -871,16 +820,12 @@ async function initApp() {
       savePlayerState();
       nextPlayerSave = now + 5000;
     }
-    if (boroughs.update) boroughs.update(elapsed); // Roosevelt Island Tramway cabins
-    if (cityLandmarks) cityLandmarks.update(elapsed, lightingSystem.activePresetId === 'midnight' || lightingSystem.activePresetId === 'twilight');
     cityBlocks.update(cameraSystem.currentPos.x, cameraSystem.currentPos.z);
     if (cityBlocks.updateLights) cityBlocks.updateLights(cameraSystem.camera);
     if (streetDetails.update) streetDetails.update(cameraSystem.camera, controllerManager.getActiveEntity());
     lightingSystem.update(cameraSystem.currentPos);
     mapSystem.update();
-    if (weather) weather.update(dt, cameraSystem.camera);
     if (cityTiles) cityTiles.update(cameraSystem.camera);
-    audioSystem.setAmbience(lightingSystem.activePresetId, weather ? weather.storm : 0);
     audioSystem.update(dt, elapsed, cameraSystem.camera, lightingSystem.activePresetId === 'midnight');
     if (warmedUp) updateSceneCulling(cameraSystem.camera.position); // the warm-up frame draws every chunk
     // Traffic collisions can move the player after controller updates; finalize moving hierarchies here.

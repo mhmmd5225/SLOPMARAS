@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { Fn, float, vec2, vec3, vec4, ivec2, uniform, texture, floor, clamp, min, select, positionLocal, modelWorldMatrix, modelWorldMatrixInverse } from 'three/tsl';
 import { GEO } from './geodata.js';
+import { decodeGrid, linearAt, groundTriangle, cutSoup, raiseVertices } from './terrain-cut.js';
 
 // js/terrain.js
 // The ground under a city built with its heights (GEO.terrain, tools/city/terrain.mjs): a fine grid under the city
@@ -22,30 +23,9 @@ import { GEO } from './geodata.js';
 
 const T = GEO.terrain || null;
 
-function decodeGrid(g) {
-  const h = new Float32Array(g.cols * g.rows);
-  let prev = 0;
-  for (let j = 0, k = 0; j < g.rows; j++) {
-    let p = prev;
-    for (let i = 0; i < g.cols; i++, k++) {
-      p += g.data[k];
-      h[k] = p / 10;
-      if (!i) prev = p;
-    }
-  }
-  return { x0: g.x0, z0: g.z0, cell: g.cell, cols: g.cols, rows: g.rows, x1: g.x0 + (g.cols - 1) * g.cell, z1: g.z0 + (g.rows - 1) * g.cell, h };
-}
 const FINE = T ? decodeGrid(T.fine) : null;
 const COARSE = T ? decodeGrid(T.coarse) : null;
 
-// A grid's height at (x, z): linear over the triangle of the cell it is in, clamped to the grid's edge
-function linearAt(G, x, z) {
-  const gx = Math.min(Math.max((x - G.x0) / G.cell, 0), G.cols - 1), gz = Math.min(Math.max((z - G.z0) / G.cell, 0), G.rows - 1);
-  const i = Math.min(Math.floor(gx), G.cols - 2), j = Math.min(Math.floor(gz), G.rows - 2);
-  const tx = gx - i, tz = gz - j, k = j * G.cols + i;
-  const h00 = G.h[k], h10 = G.h[k + 1], h01 = G.h[k + G.cols], h11 = G.h[k + G.cols + 1];
-  return tx + tz <= 1 ? h00 + (h10 - h00) * tx + (h01 - h00) * tz : h11 + (h01 - h11) * (1 - tx) + (h10 - h11) * (1 - tz);
-}
 const inFine = (x, z) => x >= FINE.x0 && x <= FINE.x1 && z >= FINE.z0 && z <= FINE.z1;
 
 /** The ground's height (m above the origin's) at world (x, z): 0 in a city without terrain */
@@ -107,202 +87,145 @@ function readAttribute(attr) {
   return out;
 }
 
-// A growable typed array
-class Grow {
-  constructor(cap) { this.a = new Float32Array(Math.max(64, cap)); this.n = 0; }
-  reserve(k) { if (this.n + k > this.a.length) { const b = new Float32Array(Math.max(this.a.length * 2, this.n + k)); b.set(this.a.subarray(0, this.n)); this.a = b; } }
-  view() { return this.a.subarray(0, this.n); }
-}
-
-// Sutherland–Hodgman on flat buffers: the part of a convex polygon (n vertices of `stride` floats, [x, y, z, ...
-// attributes], in src) where a·x + b·z + c >= 0, written to dst with its new vertices interpolated along the edges it
-// cuts. Returns the vertex count of the result (< 3: nothing left). No allocation: the buffers are reused
-function clipInto(src, n, dst, stride, a, b, c) {
-  let m = 0;
-  let pf = a * src[(n - 1) * stride] + b * src[(n - 1) * stride + 2] + c;
-  for (let k = 0, p = n - 1; k < n; p = k++) {
-    const o = k * stride, q = p * stride;
-    const f = a * src[o] + b * src[o + 2] + c;
-    if ((f >= 0) !== (pf >= 0)) {
-      const t = pf / (pf - f), d = m++ * stride;
-      for (let i = 0; i < stride; i++) dst[d + i] = src[q + i] + (src[o + i] - src[q + i]) * t;
+// The workers cutting the ground layers (terrain-worker.js), up to four beside this thread, each sent the grids once;
+// none where workers can't run (the cutting then runs here)
+let pool = null;
+function workers() {
+  if (pool) return pool;
+  pool = [];
+  try {
+    const n = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+    for (let k = 0; k < n; k++) {
+      const w = new Worker(new URL('./terrain-worker.js', import.meta.url), { type: 'module' });
+      w.jobs = new Map();
+      w.load = 0;
+      w.onmessage = ({ data }) => {
+        const job = w.jobs.get(data.id);
+        w.jobs.delete(data.id);
+        w.load -= job.size;
+        if (data.error) job.fallback(data.error); else job.resolve(data);
+      };
+      // (a worker that can't start: its jobs, and the ones after them, are cut here)
+      w.onerror = (e) => {
+        e.preventDefault?.();
+        console.warn(`[terrain] a worker failed (${e.message || 'it would not start'}): its share is cut on the main thread`);
+        pool = pool.filter((o) => o !== w);
+        for (const job of w.jobs.values()) job.fallback(e.message || 'worker failed');
+        w.jobs.clear();
+        w.terminate();
+      };
+      w.postMessage({ grids: { fine: FINE, coarse: COARSE } });
+      pool.push(w);
     }
-    if (f >= 0) { const d = m++ * stride; for (let i = 0; i < stride; i++) dst[d + i] = src[o + i]; }
-    pf = f;
+  } catch (e) {
+    console.warn(`[terrain] no workers (${e.message}): the ground is cut on the main thread`);
   }
-  return m;
+  return pool;
+}
+let nextJob = 0;
+// (started at once: a module worker only boots while this thread is free, and the city is built in one long run)
+if (T && typeof Worker !== 'undefined') workers();
+
+// One piece of cutting: a triangle soup cut, welded and laid on the ground, by the least loaded worker (or here)
+function cutJob(soup, stride, dropUndersides, normalOffset) {
+  const here = () => {
+    const cut = cutSoup(FINE, soup, stride, dropUndersides);
+    raiseVertices(FINE, COARSE, cut.unique, cut.count, stride, normalOffset);
+    return cut;
+  };
+  const ws = workers();
+  if (!ws.length) return Promise.resolve().then(here);
+  const w = ws.reduce((a, b) => (b.load < a.load ? b : a));
+  const id = nextJob++;
+  return new Promise((resolve) => {
+    const fallback = (why) => { console.warn(`[terrain] cut here instead: ${why}`); resolve(here()); };
+    w.jobs.set(id, { resolve, fallback, size: soup.length });
+    w.load += soup.length;
+    // (the soup is copied, not transferred: it is cut here should the worker fail)
+    w.postMessage({ id, soup, stride, dropUndersides, normalOffset });
+  });
 }
 
-// Cuts a geometry (world positions `world`) along the fine grid's lines and its cells' diagonals, every attribute
-// interpolated, groups keeping their ranges: each piece lies over one triangle of the ground, so raising its vertices
-// lays it on the ground exactly. Triangles already inside one ground triangle are kept whole. Returns { geometry
-// (indexed), world } or null if none is cut
-function cutToGrid(geo, world, dropUndersides) {
+// Triangles per piece of cutting: the big layers (sidewalks, curbs, road paint: ~150 000 triangles each) are shared
+// out among the workers
+const PIECE = 20000;
+
+/**
+ * Cuts a ground layer (its geometry `geo`, world positions `world`) along the fine grid's lines and its cells'
+ * diagonals in pieces on the workers, every attribute interpolated, groups keeping their ranges: each piece lies over
+ * one triangle of the ground, so raising its vertices lays it on the ground exactly. The pieces come back raised, the
+ * up-facing normals tilted with the ground when `tilt`. Resolves to { geometry (indexed, raised world positions) }, or
+ * null at once if no triangle crosses a ground triangle's edge
+ */
+function cutLayer(geo, world, dropUndersides, tilt) {
   const G = FINE;
   const index = geo.index;
   const pos = geo.attributes.position;
   const triCount = (index ? index.count : pos.count) / 3;
-  const vtx = (t, k) => (index ? index.getX(t * 3 + k) : t * 3 + k);
-  const cell = G.cell;
-  // the ground triangle (cell i, j and its half) a point lies in, -1 outside the grid
-  const where = (x, z) => {
-    const gx = (x - G.x0) / cell, gz = (z - G.z0) / cell;
-    if (gx < 0 || gz < 0 || gx > G.cols - 1 || gz > G.rows - 1) return -1;
-    const i = Math.min(Math.floor(gx), G.cols - 2), j = Math.min(Math.floor(gz), G.rows - 2);
-    return ((j * G.cols + i) << 1) | (gx - i + (gz - j) > 1 ? 1 : 0);
-  };
-  const same = (t) => {
-    const a = vtx(t, 0), b = vtx(t, 1), c = vtx(t, 2);
-    const ka = where(world[a * 3], world[a * 3 + 2]);
-    return ka >= 0 && ka === where(world[b * 3], world[b * 3 + 2]) && ka === where(world[c * 3], world[c * 3 + 2]);
-  };
-  // a triangle facing straight down (a slab's underside: nobody sees the ground from below)
-  const facesDown = (a, b, c) => {
-    const ux = world[b * 3] - world[a * 3], uy = world[b * 3 + 1] - world[a * 3 + 1], uz = world[b * 3 + 2] - world[a * 3 + 2];
-    const vx = world[c * 3] - world[a * 3], vy = world[c * 3 + 1] - world[a * 3 + 1], vz = world[c * 3 + 2] - world[a * 3 + 2];
-    const ny = uz * vx - ux * vz;
-    return ny < -0.9 * Math.hypot(uy * vz - uz * vy, ny, ux * vy - uy * vx);
-  };
+  const vtx = index ? (t, k) => index.getX(t * 3 + k) : (t, k) => t * 3 + k;
   let needs = false;
-  for (let t = 0; t < triCount && !needs; t++) if (!same(t)) needs = true;
+  for (let t = 0; t < triCount && !needs; t++) {
+    const a = vtx(t, 0), b = vtx(t, 1), c = vtx(t, 2);
+    const ka = groundTriangle(G, world[a * 3], world[a * 3 + 2]);
+    needs = ka < 0 || ka !== groundTriangle(G, world[b * 3], world[b * 3 + 2]) || ka !== groundTriangle(G, world[c * 3], world[c * 3 + 2]);
+  }
   if (!needs) return null;
-
-  const names = Object.keys(geo.attributes);
-  const attrs = names.map((name) => ({ name, s: geo.attributes[name].itemSize, a: readAttribute(geo.attributes[name]), src: geo.attributes[name] }));
-  const stride = 3 + attrs.reduce((n, a) => n + a.s, 0);
-  const out = new Grow(triCount * 3 * stride * 2);
-  const bufs = Array.from({ length: 7 }, () => new Float32Array(stride * 24));
-  // (a source vertex straight into the output)
-  const copyVertex = (i) => {
-    const d = out.a;
-    let o = out.n;
-    d[o++] = world[i * 3]; d[o++] = world[i * 3 + 1]; d[o++] = world[i * 3 + 2];
-    for (const { s, a } of attrs) for (let c = 0; c < s; c++) d[o++] = a[i * s + c];
-    out.n = o;
-  };
+  // each vertex: its world position, then its other attributes (its position comes back raised, in world space)
+  const attrs = Object.keys(geo.attributes).filter((name) => name !== 'position')
+    .map((name) => ({ name, s: geo.attributes[name].itemSize, a: readAttribute(geo.attributes[name]), src: geo.attributes[name] }));
+  let stride = 3;
+  for (const a of attrs) { a.offset = stride; stride += a.s; }
+  const normalOffset = tilt ? (attrs.find((a) => a.name === 'normal')?.offset ?? -1) : -1;
   const ranges = geo.groups.length ? geo.groups : [{ start: 0, count: triCount * 3, materialIndex: 0 }];
-  const groups = [];
-  for (const r of ranges) {
-    const start = out.n / stride;
-    for (let t = r.start / 3; t < (r.start + r.count) / 3; t++) {
-      if (dropUndersides && facesDown(vtx(t, 0), vtx(t, 1), vtx(t, 2))) continue;
-      if (same(t)) { out.reserve(stride * 3); copyVertex(vtx(t, 0)); copyVertex(vtx(t, 1)); copyVertex(vtx(t, 2)); continue; }
-      // the triangle into the scratch buffer: its three vertices
-      const rowA = bufs[0];
-      for (let k = 0; k < 3; k++) {
-        const i = vtx(t, k), o = k * stride;
-        rowA[o] = world[i * 3]; rowA[o + 1] = world[i * 3 + 1]; rowA[o + 2] = world[i * 3 + 2];
-        let q = o + 3;
-        for (const { s, a } of attrs) for (let c = 0; c < s; c++) rowA[q++] = a[i * s + c];
-      }
-      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-      for (let k = 0; k < 3; k++) { const x = rowA[k * stride], z = rowA[k * stride + 2]; x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
-      const i0 = Math.max(0, Math.floor((x0 - G.x0) / cell)), i1 = Math.min(G.cols - 2, Math.floor((x1 - G.x0) / cell));
-      const j0 = Math.max(0, Math.floor((z0 - G.z0) / cell)), j1 = Math.min(G.rows - 2, Math.floor((z1 - G.z0) / cell));
-      if (i0 > i1 || j0 > j1) { out.reserve(stride * 3); out.a.set(rowA.subarray(0, stride * 3), out.n); out.n += stride * 3; continue; } // (beyond the grid: whole)
-      // (bufs: 0 the triangle, 1-2 a row between its z cuts, 3-4 a cell between its x cuts, 5-6 the halves)
-      for (let j = j0; j <= j1; j++) {
-        const cz0 = G.z0 + j * cell;
-        // the cut lines at the grid's outer edges reach past it, so nothing there falls between two cells
-        let n = 3, src = bufs[0], dst = bufs[1];
-        if (j > 0) { n = clipInto(src, n, dst, stride, 0, 1, -cz0); src = dst; dst = bufs[2]; }
-        if (n >= 3 && j < G.rows - 2) { n = clipInto(src, n, dst, stride, 0, -1, cz0 + cell); src = dst; }
-        if (n < 3) continue;
-        const row = src, rowN = n;
-        let rx0 = Infinity, rx1 = -Infinity;
-        for (let k = 0; k < rowN; k++) { const x = row[k * stride]; if (x < rx0) rx0 = x; if (x > rx1) rx1 = x; }
-        for (let i = i0; i <= i1; i++) {
-          const cx0 = G.x0 + i * cell;
-          let m = rowN, s2 = row, d2 = bufs[3];
-          if (i > 0 && rx0 < cx0) { m = clipInto(s2, m, d2, stride, 1, 0, -cx0); s2 = d2; d2 = bufs[4]; }
-          if (m >= 3 && i < G.cols - 2 && rx1 > cx0 + cell) { m = clipInto(s2, m, d2, stride, -1, 0, cx0 + cell); s2 = d2; }
-          if (m < 3) continue;
-          // the cell's diagonal: u + v = 1 in the cell's own (u, v); f > 0 on the lower-left half. A polygon wholly on
-          // one side is kept as it is
-          const dc = 1 + cx0 / cell + cz0 / cell;
-          let lo = false, hi = false;
-          for (let k = 0; k < m; k++) {
-            const f = dc - (s2[k * stride] + s2[k * stride + 2]) / cell;
-            if (f > 1e-6) lo = true; else if (f < -1e-6) hi = true;
-          }
-          for (let side = 0; side < 2; side++) {
-            if (side === 0 ? !lo && hi : !hi && lo) continue; // (nothing on this side)
-            let h, hb;
-            if (side === 0 ? !hi : !lo) { h = m; hb = s2; } // (all of it is on this side)
-            else { const sg = side === 0 ? 1 : -1; h = clipInto(s2, m, bufs[5], stride, -sg / cell, -sg / cell, sg * dc); hb = bufs[5]; }
-            if (h < 3) continue;
-            out.reserve(stride * 3 * (h - 2));
-            const d = out.a;
-            for (let k = 1; k + 1 < h; k++) {
-              d.set(hb.subarray(0, stride), out.n);
-              d.set(hb.subarray(k * stride, (k + 1) * stride), out.n + stride);
-              d.set(hb.subarray((k + 1) * stride, (k + 2) * stride), out.n + stride * 2);
-              out.n += stride * 3;
-            }
-          }
+  const pieces = [];
+  ranges.forEach((r, g) => {
+    for (let t0 = r.start / 3, end = Math.min(triCount, (r.start + r.count) / 3); t0 < end; t0 += PIECE) {
+      const t1 = Math.min(end, t0 + PIECE);
+      const soup = new Float32Array((t1 - t0) * 3 * stride);
+      let o = 0;
+      for (let t = t0; t < t1; t++) {
+        for (let k = 0; k < 3; k++) {
+          const i = vtx(t, k);
+          soup[o++] = world[i * 3]; soup[o++] = world[i * 3 + 1]; soup[o++] = world[i * 3 + 2];
+          for (const { s, a } of attrs) for (let c = 0; c < s; c++) soup[o++] = a[i * s + c];
         }
       }
+      pieces.push({ g, cut: cutJob(soup, stride, dropUndersides, normalOffset) });
     }
-    groups.push({ start, count: out.n / stride - start, materialIndex: r.materialIndex });
-  }
-  // Back to attributes, the pieces' vertices welded (the same position & attributes, to 1 mm / 1e-4: one vertex,
-  // indexed), which keeps the cut ground's memory near its triangle count rather than three vertices each
-  const n = out.n / stride, data = out.a;
-  // (positions to 1 mm, the rest to 1e-4: quantised once per vertex into `key`, kept for each unique one)
-  let size = 1;
-  while (size < n * 2) size <<= 1;
-  const mask = size - 1;
-  const table = new Int32Array(size).fill(-1); // open addressing: slot -> unique vertex
-  const unique = new Grow(n * stride * 0.5);
-  let ukeys = new Int32Array(Math.max(64, n * stride * 0.5));
-  const indices = new Uint32Array(n);
-  const key = new Int32Array(stride);
-  let count = 0;
-  for (let k = 0; k < n; k++) {
-    const o = k * stride;
-    let h = 0x811c9dc5;
-    for (let c = 0; c < 3; c++) { const q = Math.round(data[o + c] * 1000); key[c] = q; h = Math.imul(h ^ q, 16777619); }
-    for (let c = 3; c < stride; c++) { const q = Math.round(data[o + c] * 10000); key[c] = q; h = Math.imul(h ^ q, 16777619); }
-    let slot = (h ^ (h >>> 15)) & mask, found = -1;
-    for (;;) {
-      const u = table[slot];
-      if (u < 0) break;
-      const uo = u * stride;
-      let c = 0;
-      while (c < stride && ukeys[uo + c] === key[c]) c++;
-      if (c === stride) { found = u; break; }
-      slot = (slot + 1) & mask;
+  });
+  return Promise.all(pieces.map((p) => p.cut)).then((cuts) => {
+    // the pieces' vertices one after another, their indices offset to match, each group the run of its pieces'
+    let count = 0, emitted = 0;
+    for (const c of cuts) { count += c.count; emitted += c.indices.length; }
+    const u = new Float32Array(count * stride);
+    const indices = count > 65535 ? new Uint32Array(emitted) : new Uint16Array(emitted);
+    const groups = ranges.map((r) => ({ start: 0, count: 0, materialIndex: r.materialIndex }));
+    let base = 0, at = 0;
+    cuts.forEach((c, k) => {
+      u.set(c.unique, base * stride);
+      for (let i = 0; i < c.indices.length; i++) indices[at + i] = c.indices[i] + base;
+      const group = groups[pieces[k].g];
+      if (!group.count) group.start = at;
+      group.count += c.indices.length;
+      base += c.count;
+      at += c.indices.length;
+    });
+    const result = new THREE.BufferGeometry();
+    for (const { name, s, src, offset } of [{ name: 'position', s: 3, src: pos, offset: 0 }, ...attrs]) {
+      const arr = new Float32Array(count * s);
+      for (let k = 0; k < count; k++) for (let c = 0; c < s; c++) arr[k * s + c] = u[k * stride + offset + c];
+      const Arr = src.array && !src.isInterleavedBufferAttribute ? src.array.constructor : Float32Array;
+      result.setAttribute(name, new THREE.BufferAttribute(Arr === Float32Array ? arr : Arr.from(arr), s, src.normalized));
     }
-    if (found < 0) {
-      found = count++;
-      table[slot] = found;
-      unique.reserve(stride);
-      unique.a.set(data.subarray(o, o + stride), unique.n);
-      unique.n += stride;
-      if (unique.n > ukeys.length) { const g = new Int32Array(ukeys.length * 2); g.set(ukeys); ukeys = g; }
-      ukeys.set(key, found * stride);
-    }
-    indices[k] = found;
-  }
-  const u = unique.a;
-  const w = new Float32Array(count * 3);
-  const result = new THREE.BufferGeometry();
-  for (let k = 0; k < count; k++) { w[k * 3] = u[k * stride]; w[k * 3 + 1] = u[k * stride + 1]; w[k * 3 + 2] = u[k * stride + 2]; }
-  let off = 3;
-  for (const { name, s, src } of attrs) {
-    const arr = new Float32Array(count * s);
-    for (let k = 0; k < count; k++) for (let c = 0; c < s; c++) arr[k * s + c] = u[k * stride + off + c];
-    off += s;
-    const Arr = src.array && !src.isInterleavedBufferAttribute ? src.array.constructor : Float32Array;
-    result.setAttribute(name, new THREE.BufferAttribute(Arr === Float32Array ? arr : Arr.from(arr), s, src.normalized));
-  }
-  result.setIndex(new THREE.BufferAttribute(count > 65535 ? indices : Uint16Array.from(indices), 1));
-  if (geo.groups.length) for (const g of groups) result.addGroup(g.start, g.count, g.materialIndex);
-  return { geometry: result, world: w };
+    result.setIndex(new THREE.BufferAttribute(indices, 1));
+    if (geo.groups.length) for (const g of groups) result.addGroup(g.start, g.count, g.materialIndex);
+    return { geometry: result };
+  });
 }
 
-// Raises a static mesh's vertices by the ground under each (a ground layer cut along the ground's triangles first):
-// up-facing normals tilt with the slope so it is lit as one. Returns how many triangles the cutting added
+// Raises a static mesh's vertices by the ground under each, up-facing normals tilted with the slope so it is lit as
+// one. A ground layer is cut along the ground's triangles first, on the workers: then a promise, settled once it is
+// cut, raised and in place. Returns how many triangles the cutting added (or a promise of it)
 function bakeMesh(mesh, shared) {
   let geo = mesh.geometry;
   if (!geo || !geo.attributes.position) return 0;
@@ -311,7 +234,7 @@ function bakeMesh(mesh, shared) {
   _m.copy(mesh.matrixWorld);
   const identity = _m.equals(IDENTITY);
   const pos = geo.attributes.position;
-  let world = readAttribute(pos);
+  const world = readAttribute(pos);
   if (!identity) for (let i = 0; i < pos.count; i++) _v.fromArray(world, i * 3).applyMatrix4(_m).toArray(world, i * 3);
   const before = (geo.index ? geo.index.count : pos.count) / 3;
   // The ground layers (the road deck, sidewalks & curbs, lawns, road paint: all within a metre or so of the street)
@@ -321,8 +244,21 @@ function bakeMesh(mesh, shared) {
   for (let i = 1; i < world.length; i += 3) { lo = Math.min(lo, world[i]); hi = Math.max(hi, world[i]); }
   const ground = mesh.isMesh && lo > -3 && hi < 1.5;
   const material = [].concat(mesh.material)[0];
-  const cut = ground ? cutToGrid(geo, world, material && material.side === THREE.FrontSide) : null;
-  if (cut) { geo = cut.geometry; world = cut.world; }
+  const cutting = ground ? cutLayer(geo, world, material && material.side === THREE.FrontSide, identity) : null;
+  if (cutting) {
+    const inv = _m.clone().invert();
+    return cutting.then(({ geometry }) => {
+      // (raised in world space by the workers: back into the mesh's own frame unless the two are the same)
+      if (!identity) {
+        const p = geometry.attributes.position;
+        for (let i = 0; i < p.count; i++) { _v.fromBufferAttribute(p, i).applyMatrix4(inv); p.setXYZ(i, _v.x, _v.y, _v.z); }
+      }
+      geometry.computeBoundingBox();
+      geometry.computeBoundingSphere();
+      mesh.geometry = geometry;
+      return geometry.index.count / 3 - before;
+    });
+  }
   _inv.copy(_m).invert();
   const p = geo.attributes.position, n = identity ? geo.attributes.normal : null;
   for (let i = 0; i < p.count; i++) {
@@ -341,7 +277,7 @@ function bakeMesh(mesh, shared) {
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
   mesh.geometry = geo;
-  return (geo.index ? geo.index.count : p.count) / 3 - before;
+  return 0;
 }
 
 // Raises an instanced mesh's instances, each as a whole, by the ground under its origin
@@ -379,15 +315,18 @@ function liftObject(o, fresh = true) {
   u.terrainY = o.position.y;
 }
 
+// What startTerrainBake has set going: the ground layers being cut, and the count so far
+const baking = { pending: [], stats: { meshes: 0, instanced: 0, lights: 0, triangles: 0, ms: 0 } };
+
 /**
- * Bakes the ground into the static city under `roots` (once, after it is built and before the culling is set up):
- * meshes cut along the ground's triangles and raised, instances raised whole, lamps raised. Marks each baked object
- * (userData.terrainBaked) so liftMaterials() leaves it be. Returns what it did
+ * Starts baking the ground into the static city under `roots`, as soon as it is built (bakeTerrain finishes it): the
+ * ground layers go to the workers to be cut along the ground's triangles while this thread builds the rest of the
+ * city; the rest (buildings, instances, lamps) is raised here and now. Marks each object (userData.terrainBaked) so
+ * it is baked once and liftMaterials() leaves it be
  */
-function bakeTerrain(roots) {
-  const stats = { meshes: 0, instanced: 0, lights: 0, triangles: 0, ms: 0 };
-  if (!T) return stats;
-  const t0 = performance.now();
+function startTerrainBake(roots) {
+  if (!T) return;
+  const stats = baking.stats;
   const shared = new Map();
   for (const root of roots) root.traverse((o) => { if (o.isMesh && !o.isInstancedMesh && o.geometry) shared.set(o.geometry, (shared.get(o.geometry) || 0) + 1); });
   for (const root of roots) {
@@ -401,14 +340,29 @@ function bakeTerrain(roots) {
         bakeInstances(o);
         stats.instanced++;
       } else if (o.isMesh || o.isLine || o.isPoints) {
-        stats.triangles += bakeMesh(o, shared);
+        const added = bakeMesh(o, shared);
+        if (added instanceof Promise) baking.pending.push(added.then((n) => (stats.triangles += n)));
+        else stats.triangles += added;
         stats.meshes++;
       } else return;
       o.userData.terrainBaked = true;
     });
   }
-  stats.ms = Math.round(performance.now() - t0);
-  return stats;
+}
+
+/**
+ * Bakes the ground into the static city under `roots` (once, after it is built and before the culling is set up),
+ * with what startTerrainBake started: meshes cut along the ground's triangles and raised, instances raised whole,
+ * lamps raised. Resolves to what it did, `ms` the time spent here
+ */
+async function bakeTerrain(roots) {
+  const t0 = performance.now();
+  if (!T) return baking.stats;
+  startTerrainBake(roots);
+  await Promise.all(baking.pending);
+  baking.pending = [];
+  baking.stats.ms = Math.round(performance.now() - t0);
+  return baking.stats;
 }
 
 // --- What moves, lifted in the shader --------------------------------------------------------------------------------
@@ -542,4 +496,4 @@ function createRegionGround(material, covered, { reach = 30000, sink = 0.6 } = {
 }
 
 const HAS_TERRAIN = !!T;
-export { HAS_TERRAIN, heightAt, slopeAt, terrainHeightNode, deckY, bakeTerrain, liftMaterials, collectLights, liftLights, createRegionGround };
+export { HAS_TERRAIN, heightAt, slopeAt, terrainHeightNode, deckY, startTerrainBake, bakeTerrain, liftMaterials, collectLights, liftLights, createRegionGround };

@@ -1,5 +1,5 @@
 // js/city-common.js
-// Shared by the city configurations (nyc-config.js, open-city-config.js; see city-config.js): flat point arrays, the
+// Shared by the city configuration (open-city-config.js; see city-config.js): flat point arrays, the
 // blocks (curb islands) with their spatial index, the nearest-road index, the traffic signal cycle & keyboard focus
 
 const toPts = (flat) => {
@@ -150,38 +150,38 @@ function walkSignal(time, isAvenue) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Vehicle liveries (CITY.vehicles): New York's, which a city's config may override part by part (GEO.vehicles)
+// Vehicle liveries (CITY.vehicles): the defaults, which a city's config may override part by part (GEO.vehicles)
 //   taxis: the taxi fleet's paints (repeat one to make it commoner); taxiBadge: the door badge's plate (null: the
 //   lettering straight on the paint), taxiLettering, taxiMedallion: the medallion number on the rear quarter;
 //   plate: front plate colour & the rear plates' atlas (bg, ink, labels); playerTaxi: the player's taxi's door decal
 //   & plates; bus: livery & destination sign; labels: the HUD's names for the player's car & bicycle
 // ---------------------------------------------------------------------------------------------------------------------
-const NYC_VEHICLES = {
-  taxis: [0xffbe14],
+const DEFAULT_VEHICLES = {
+  taxis: [0xffc40c],
   taxiBadge: 0x121417,
-  taxiLettering: 0xffbe14,
-  taxiMedallion: true,
-  plate: { front: 0xf2b718, bg: '#f2b718', ink: '#17212c', labels: ['4KM 728', '7TR 319', '2BJ 506', '6XL 842'] },
+  taxiLettering: 0x121417,
+  taxiMedallion: false,
+  plate: { front: 0xf4f4f0, bg: '#f4f4f0', ink: '#111111', labels: ['34 KM 728', '06 ABC 319', '35 AT 506', '16 DS 842'] },
   playerTaxi: {
-    door: { bg: '#ffbe14', ink: '#111317', emblem: 'T', title: 'NYC TAXI', lines: ['7Y48 · MEDALLION', '$3.00 INITIAL FARE'] },
-    plate: { bg: '#ffb81c', band: '#0d2244', ink: '#0d2244', top: 'NEW YORK', number: '7Y48A', bottom: 'NYC T&LC' }
+    door: { bg: '#ffc40c', ink: '#111317', emblem: 'T', title: 'TAKSİ', lines: ['', ''] },
+    plate: { bg: '#f4f4f0', band: '#1b3f9a', ink: '#111111', top: 'TR', number: '34 T 1973', bottom: '' }
   },
-  bus: { body: 0xf0f4f8, stripe: 0x0058b8, ribbon: 0x00a8e8, skirt: 0x1c2026, route: 'M1', routeBadge: '#0058b8', destination: '5 AV / HARLEM' },
-  labels: { car: 'NYC Yellow Taxi', cyclist: 'NYC Bike Lane Cyclist' }
+  bus: { body: 0xf3f4f6, stripe: 0xc8102e, ribbon: 0xe8a33d, skirt: 0x1c2026, route: '1', routeBadge: '#c8102e', destination: 'MERKEZ' },
+  labels: { car: 'Taksi', cyclist: 'Bisikletli' }
 };
 function vehiclesFor(overrides = {}) {
   const o = overrides || {};
   return {
-    ...NYC_VEHICLES,
+    ...DEFAULT_VEHICLES,
     ...o,
-    plate: { ...NYC_VEHICLES.plate, ...o.plate },
+    plate: { ...DEFAULT_VEHICLES.plate, ...o.plate },
     playerTaxi: {
-      door: { ...NYC_VEHICLES.playerTaxi.door, ...(o.playerTaxi || {}).door },
-      plate: { ...NYC_VEHICLES.playerTaxi.plate, ...(o.playerTaxi || {}).plate }
+      door: { ...DEFAULT_VEHICLES.playerTaxi.door, ...(o.playerTaxi || {}).door },
+      plate: { ...DEFAULT_VEHICLES.playerTaxi.plate, ...(o.playerTaxi || {}).plate }
     },
-    bus: { ...NYC_VEHICLES.bus, ...o.bus },
-    labels: { ...NYC_VEHICLES.labels, ...o.labels }
+    bus: { ...DEFAULT_VEHICLES.bus, ...o.bus },
+    labels: { ...DEFAULT_VEHICLES.labels, ...o.labels }
   };
 }
 
-export { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal, NYC_VEHICLES, vehiclesFor };
+export { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal, DEFAULT_VEHICLES, vehiclesFor };

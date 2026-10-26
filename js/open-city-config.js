@@ -2,10 +2,10 @@ import { GEO } from './geodata.js';
 import { toPts, createBlocks, createBlockIndex, createRoadIndex, isTypingInField, SIGNAL_TIMING, signalPhase, walkSignal, vehiclesFor } from './city-common.js';
 
 // js/open-city-config.js
-// A city built from OpenStreetMap (tools/city/build.mjs: js/<city>-geodata.js, version 2) behind the same interface as
-// nyc-config.js (see city-config.js): its land, blocks and roads, the bounds the controllers and the road network keep
-// to, a starting point, and empty stand-ins for New York's own features (the avenues & numbered streets, Central Park,
-// Broadway, the piers, bridges, boroughs and landmarks), which the builders skip or do without.
+// The city built from OpenStreetMap (tools/city/build.mjs: js/<city>-geodata.js, version 2) behind the interface
+// city-config.js re-exports: its land, blocks and roads, the bounds the controllers and the road network keep to, a
+// starting point, and empty stand-ins for the features of a gridded city (avenues & numbered streets, a central park,
+// a diagonal avenue, piers, bridges, boroughs), which the builders skip or do without.
 
 const F = GEO.frame;
 const CITY = { id: GEO.city, name: GEO.name, short: GEO.short, open: true, driveSide: F.driveSide || 'right', units: F.units === 'imperial' ? 'imperial' : 'metric', vehicles: vehiclesFor(GEO.vehicles) };
@@ -28,8 +28,7 @@ const ISLAND_BOUNDS = (() => {
 })();
 const CUT_Z = ISLAND_BOUNDS.minZ;
 
-// The westernmost and easternmost land at every 2 m of z (the outermost crossings of the land outlines), what
-// nyc-config.js's Manhattan shore is to the island
+// The westernmost and easternmost land at every 2 m of z (the outermost crossings of the land outlines)
 const SHORE = (() => {
   const step = 2;
   const z0 = Math.ceil(ISLAND_BOUNDS.minZ / step) * step;
@@ -175,13 +174,13 @@ function nearestStreetPoint(x, z, radius = 300) {
 // Places (GEO.places): the teleport destinations, arriving on the street nearest each, and the landmarks the labels name
 const PLACES = (GEO.places || []).map((p) => ({ ...p, arrival: nearestStreetPoint(p.x, p.z) }));
 const TELEPORT_LOCATIONS = Object.fromEntries(PLACES.filter((p) => p.arrival).map((p) => [p.id, { ...p.arrival, name: p.name, sub: p.sub }]));
-const NYC_LANDMARKS = PLACES.map((p) => ({ id: p.id, name: p.name, short: p.name, x: p.x, z: p.z, district: p.sub }));
+const PLACE_LIST = PLACES.map((p) => ({ id: p.id, name: p.name, short: p.name, x: p.x, z: p.z, district: p.sub }));
 
 /** The place or the nearest streets' names at (x, z): "Place · A & B", "A & B", one street, or the city's name */
 function getLocationLabel(x, z) {
   const near = nearestRoads(x, z, 120);
   const streets = near.length >= 2 && near[1].dist < 60 ? `${near[0].road.name} & ${near[1].road.name}` : near.length ? near[0].road.name : '';
-  const place = NYC_LANDMARKS.find((p) => Math.hypot(x - p.x, z - p.z) < 80);
+  const place = PLACE_LIST.find((p) => Math.hypot(x - p.x, z - p.z) < 80);
   if (place) return streets ? `${place.name} · ${streets}` : place.name;
   return streets || CITY.name;
 }
@@ -247,7 +246,7 @@ export {
   STREETS,
   ALL_STREETS,
   ROADS,
-  NYC_LANDMARKS,
+  PLACE_LIST,
   LANDMARK_SITES,
   TELEPORT_LOCATIONS,
   ISLAND_BOUNDS,

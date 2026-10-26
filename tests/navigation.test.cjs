@@ -18,6 +18,8 @@ const { makeCurve, curvePoint, updateCar } = vm.runInNewContext(`
   ${pick(roadSource, /function makeCurve\(e, i, f, j\) \{[\s\S]*?\n\}/, 'makeCurve')}
   ${pick(roadSource, /function curvePoint\(c, s, out\) \{[\s\S]*?\n\}/, 'curvePoint')}
   ${pick(carSource, /const CAR_DRIVE = \{[\s\S]*?\n\};/, 'CAR_DRIVE')}
+  ${pick(carSource, /const GRAVITY = [^\n]*\n/, 'GRAVITY')}
+  ${pick(carSource, /const gravityAlong = [^\n]*\n/, 'gravityAlong')}
   ${pick(carSource, /function driveSpeed\(speed, throttle, dt, drive\) \{[\s\S]*?\n\}/, 'driveSpeed')}
   // the player car's own update (ThirdPersonControllerManager.updateCar), run on a stand-in manager
   function updateCar${pick(carSource, /  updateCar\(dt\) \{[\s\S]*?\n  \}/, 'updateCar').replace(/^  updateCar/, '')}
@@ -106,7 +108,7 @@ function makeCar(x, z, heading) {
   };
 }
 function stepCar(c, keys, dt) {
-  updateCar.call({ entities: { car: c }, keys, resolveHorizontalCollision() {}, getGroundHeight: () => 0 }, dt);
+  updateCar.call({ entities: { car: c }, keys, resolveHorizontalCollision() {}, getGroundHeight: () => 0, gradeAt: () => 0 }, dt);
 }
 
 function rig(network, car, traffic = { cars: [], buses: [], peds: [] }) {
