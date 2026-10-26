@@ -18,7 +18,7 @@ import { CameraSystem, CAMERA_PRESETS } from './cameras.js';
 import { LightingSystem } from './lighting.js';
 import { CityMapSystem } from './city-map.js';
 import { setupSceneCulling, updateSceneCulling } from './scene-culling.js';
-import { HAS_TERRAIN, bakeTerrain, liftMaterials, collectLights, liftLights } from './terrain.js';
+import { HAS_TERRAIN, startTerrainBake, bakeTerrain, liftMaterials, collectLights, liftLights } from './terrain.js';
 import { CityAudioSystem } from './audio-system.js';
 import { Navigator } from './navigation.js';
 import { setupNavigationUI } from './navigation-ui.js';
@@ -105,6 +105,8 @@ async function initApp() {
   // 3. Build the city's ground, blocks, street details & traffic: its ground, blocks, trees and traffic, from
   //    OpenStreetMap
   const cityGrid = buildCityGrid(scene);
+  // (its ground layers go to be cut along the ground's heights while the rest of the city is built: terrain.js)
+  startTerrainBake([cityGrid.group]);
   markInit('cityGrid');
   // (the buildings stand as mapped)
   const cityBlocks = buildOpenCityBuildings(scene);
@@ -128,6 +130,8 @@ async function initApp() {
   markInit('traffic');
   const highwayTraffic = createHighwayTraffic(scene, cityGrid.highwayLanes);
   buildRoadPaint(scene, trafficSystem.network);
+  // (the road paint too: the street details wait for their signal heads, below)
+  startTerrainBake([scene.getObjectByName('RoadMarkings')].filter(Boolean));
   markInit('roadPaint');
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
@@ -218,7 +222,7 @@ async function initApp() {
   // (scene-culling.js)
   // A city on its ground's heights (terrain.js): the static city is raised onto the ground once, here, before the
   // culling cuts it into cells and shadow stand-ins; what moves is raised in its vertex stage (below)
-  const terrainStats = bakeTerrain(['CityGrid', 'CityBuildings', 'CityStreetDetails', 'RoadMarkings'].map((name) => scene.getObjectByName(name)).filter(Boolean));
+  const terrainStats = await bakeTerrain(['CityGrid', 'CityBuildings', 'CityStreetDetails', 'RoadMarkings'].map((name) => scene.getObjectByName(name)).filter(Boolean));
   if (HAS_TERRAIN) console.info(`[terrain] baked ${terrainStats.meshes} meshes (+${terrainStats.triangles} triangles cut along the ground's), ${terrainStats.instanced} instanced meshes & ${terrainStats.lights} lamps in ${terrainStats.ms} ms`);
   markInit('terrain');
 
