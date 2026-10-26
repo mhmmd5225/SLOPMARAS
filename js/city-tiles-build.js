@@ -2,6 +2,7 @@
 // One island tile's geometry as plain typed arrays (tools/city/tiles.mjs writes the tiles), with no three.js: run in
 // js/city-tiles-worker.js so building a tile never stalls a frame, or on the main thread where workers aren't available.
 // buildTileArrays(tile) -> { walls, roofs, roads } each { position, normal, uv?, color?, sphere: [x, y, z, r] } or null,
+// and `outlines` { pts (x, z), offsets (building k's points are offsets[k]..offsets[k + 1]), tops } for the maps;
 // positions relative to the tile's corner. Their arrays are transferable.
 
 // Building colours by type: Singapore's HDB estates in their painted pastels, factories in grey and blue steel
@@ -99,7 +100,18 @@ function upTri(out, p, q, r, y) {
 function buildTileArrays(tile) {
   const walls = { pos: [], nrm: [], uv: [], col: [] };
   const roofs = { pos: [], col: [] };
-  for (const b of decodeBuildings(tile.buildings)) {
+  const buildings = decodeBuildings(tile.buildings);
+  const outlines = {
+    pts: new Float32Array(buildings.reduce((n, b) => n + b.pts.length, 0)),
+    offsets: new Uint32Array(buildings.length + 1),
+    tops: new Float32Array(buildings.length)
+  };
+  buildings.forEach((b, k) => {
+    outlines.pts.set(b.pts, outlines.offsets[k] * 2);
+    outlines.offsets[k + 1] = outlines.offsets[k] + b.pts.length / 2;
+    outlines.tops[k] = b.top;
+  });
+  for (const b of buildings) {
     const pts = b.pts;
     const n = pts.length / 2;
     const r = hash(pts[0], pts[1]);
@@ -171,6 +183,7 @@ function buildTileArrays(tile) {
     walls: pack(walls.pos, () => ({ normal: new Float32Array(walls.nrm), uv: new Float32Array(walls.uv), color: new Float32Array(walls.col) })),
     roofs: pack(roofs.pos, (count) => ({ normal: up(count), color: new Float32Array(roofs.col) })),
     roads: pack(roads, (count) => ({ normal: up(count) })),
+    outlines,
     counts: { walls: walls.pos.length / 18, roofs: roofs.pos.length / 9, roads: roads.length / 18 }
   };
 }
@@ -182,6 +195,7 @@ function transferables(built) {
     if (!part) continue;
     for (const k of ['position', 'normal', 'uv', 'color']) if (part[k]) list.push(part[k].buffer);
   }
+  if (built.outlines) for (const k of ['pts', 'offsets', 'tops']) list.push(built.outlines[k].buffer);
   return list;
 }
 

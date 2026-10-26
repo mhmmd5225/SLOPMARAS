@@ -122,6 +122,8 @@ class CityTiles {
     }
     this.index = null;
     this.stats = { tiles: 0, walls: 0 };
+    // called with (tile corner x, z, outlines) as each tile is added (the maps draw its buildings)
+    this.onTileOutlines = null;
     // a stand-in using each material, so the shaders compile behind the loading screen with the rest
     const stand = new THREE.BufferGeometry();
     stand.setAttribute('position', new THREE.Float32BufferAttribute([0, -50, 0, 1, -50, 0, 0, -50, 1], 3));
@@ -223,6 +225,7 @@ class CityTiles {
       this.loaded.set(job.key, { group, walls: job.built.counts.walls });
       this.stats.tiles++;
       this.stats.walls += job.built.counts.walls;
+      if (this.onTileOutlines && job.built.outlines) this.onTileOutlines(job.key, job.t.i * T, job.t.j * T, job.built.outlines);
     }
     // drop the tiles well out of range
     for (const [key, entry] of this.loaded) {

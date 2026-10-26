@@ -607,6 +607,17 @@ async function initApp() {
   });
 
   const openMapBtn = document.getElementById('btn-open-map');
+
+  // The maps show the whole island: its land at once, its main roads once roads.json arrives, and each streamed tile's
+  // buildings as it loads
+  if (cityTiles?.index) {
+    const land = cityTiles.index.land;
+    mapSystem.setIsland({ land });
+    fetch(`${cityTiles.url}roads.json`).then((r) => (r.ok ? r.json() : null)).then((roads) => {
+      if (roads) mapSystem.setIsland({ land, roads });
+    }).catch((e) => console.warn(`[map] no island roads: ${e.message}`));
+    cityTiles.onTileOutlines = (key, x, z, outlines) => mapSystem.addTile(key, x, z, outlines);
+  }
   if (openMapBtn) openMapBtn.addEventListener('click', () => mapSystem.toggleFullMap(true));
 
   if (hudToggleBtn) {
@@ -775,7 +786,7 @@ async function initApp() {
   }
 
   // For poking at from the console (and the browser checks): the simulation's main systems
-  globalThis.slop = { scene, controllerManager, cameraSystem, lightingSystem, audioSystem, cityTiles, cityLandmarks, weather };
+  globalThis.slop = { scene, controllerManager, cameraSystem, lightingSystem, audioSystem, cityTiles, cityLandmarks, weather, mapSystem };
 
   await precompileShaders();
   markInit('compile');

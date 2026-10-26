@@ -9,6 +9,8 @@
 //     buildings: { types, data } as GEO.buildings (tools/city/build.mjs; outer rings only), relative to the tile's corner,
 //     roads: [class, width (dm), points..., dx dz (dm) from the point before (the first from the tile's corner)] runs
 //   }
+// and tiles/<city>/roads.json, the island's main roads for the maps (js/nyc-map.js), outside the detailed area:
+//   { classes, names, roads: [[class, name index or -1, x0, z0, then each point's dx dz (m) from the one before]] }
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -166,6 +168,28 @@ export async function buildTiles(cityOrId, { data, out, geo } = {}) {
   }
   log(`${items.length - byParts} buildings in tiles (${byParts} outlines drawn by their parts), ${roadRuns} road runs`);
 
+  // --- The maps' road layer: every main road beyond the detailed area (tunnels too), simplified to 4 m ---------------
+  const mapNames = [];
+  const nameIndex = new Map();
+  const mapRoads = [];
+  for (const e of roadsOSM) {
+    const t = e.tags || {};
+    const ci = ROAD_CLASSES.indexOf(t.highway);
+    if (ci < 0 || !e.geometry || t.area === 'yes') continue;
+    const pts = rdp(e.geometry.map((g) => toWorld(g.lon, g.lat)), 4);
+    if (pts.length < 2 || pts.every(([x, z]) => inCore(x, z))) continue;
+    const name = t.name || t.ref || '';
+    if (name && !nameIndex.has(name)) { nameIndex.set(name, mapNames.length); mapNames.push(name); }
+    const r = [ci, name ? nameIndex.get(name) : -1];
+    let px = 0, pz = 0;
+    for (const [x, z] of pts) {
+      const qx = Math.round(x), qz = Math.round(z);
+      r.push(qx - px, qz - pz);
+      px = qx; pz = qz;
+    }
+    mapRoads.push(r);
+  }
+
   // --- Write ---------------------------------------------------------------------------------------------------------
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
@@ -217,6 +241,9 @@ export async function buildTiles(cityOrId, { data, out, geo } = {}) {
     tiles: index
   };
   fs.writeFileSync(path.join(outDir, 'index.json'), JSON.stringify(indexJson));
+  const roadsJson = JSON.stringify({ classes: ROAD_CLASSES, names: mapNames, roads: mapRoads });
+  fs.writeFileSync(path.join(outDir, 'roads.json'), roadsJson);
+  log(`roads.json: ${mapRoads.length} main roads for the maps (${(roadsJson.length / 1024).toFixed(0)} KB)`);
   const indexBytes = fs.statSync(path.join(outDir, 'index.json')).size;
   log(`wrote ${index.length} tiles (${(bytes / 1e6).toFixed(1)} MB) and index.json (${(indexBytes / 1024).toFixed(0)} KB) into ${outDir}`);
   return indexJson;

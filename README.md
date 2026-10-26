@@ -34,7 +34,7 @@ The rest of the island, as streamed tiles (`island` in the city's config): build
 
 ```sh
 node tools/city/fetch-island.mjs <city>                            # buildings & main roads cell by cell, coastline, water
-node --max-old-space-size=8192 tools/city/tiles.mjs <city>        # writes tiles/<city>/index.json and a file per tile
+node --max-old-space-size=8192 tools/city/tiles.mjs <city>        # writes tiles/<city>/: index.json, a file per tile, roads.json for the maps
 ```
 
 New York (`?city=nyc`) has its own data build from NYC Open Data: `node --max-old-space-size=8192 tools/build-geodata.mjs`.
