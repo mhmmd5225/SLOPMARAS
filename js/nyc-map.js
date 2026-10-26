@@ -26,6 +26,7 @@ import {
   OUTER_BRIDGES,
   getLocationLabel,
   isTypingInField,
+  LAND_REGIONS,
   CITY
 } from './city-config.js';
 
@@ -229,9 +230,17 @@ function mapLayers() {
   for (const ring of rings([RANDALLS_ISLAND_POLYGON, ROOSEVELT_ISLAND_POLYGON, GOVERNORS_ISLAND_POLYGON, LIBERTY_ISLAND_POLYGON,
     ELLIS_ISLAND_POLYGON, MILL_ROCK_POLYGON])) addRing(L.islands, ring);
 
-  // Manhattan inside its bulkhead line, and its piers
+  // Manhattan inside its bulkhead line, and its piers (a city built from OpenStreetMap: its detailed land, less its
+  // inland water)
   L.manhattan = new Path2D();
   addRing(L.manhattan, MANHATTAN_COASTLINE);
+  L.inlandWater = new Path2D();
+  if (CITY.open) {
+    for (const r of LAND_REGIONS) {
+      addRing(L.manhattan, r.outer);
+      for (const h of r.holes) addRing(L.inlandWater, h);
+    }
+  }
   L.piers = new Path2D();
   for (const p of WATERFRONT_PIERS) if (p.ring) addRing(L.piers, p.ring);
 
@@ -304,9 +313,11 @@ function footprintLayers(all) {
 // never slide while the map pans), with the direction of the street there (never upside down: vertical names read
 // upwards)
 const ROAD_LABELS = [];
-for (const r of ROADS) {
+for (const r of ROADS) addRoadLabel(r);
+// A road's label anchors (`r`: { name, pts [{ x, z }], highway, w })
+function addRoadLabel(r) {
   const text = LABEL_ALIAS[r.name] || r.name;
-  if (!text || /^Unnamed/.test(text)) continue;
+  if (!text || /^Unnamed/.test(text)) return;
   const anchors = [];
   const pts = r.pts;
   for (let i = 0; i + 1 < pts.length;) {
@@ -335,7 +346,7 @@ for (const r of ROADS) {
       anchors.push({ x: a.x + (c.x - a.x) * t, z: a.z + (c.z - a.z) * t, ang, len: len / k });
     }
   }
-  if (!anchors.length) continue;
+  if (!anchors.length) return;
   ROAD_LABELS.push({
     text,
     lower: text.toLowerCase(),
@@ -347,7 +358,67 @@ for (const r of ROADS) {
     ...boundsOf(r.pts)
   });
 }
-const ROAD_NAME_COUNT = new Set(ROAD_LABELS.map((l) => l.text)).size;
+let ROAD_NAME_COUNT = new Set(ROAD_LABELS.map((l) => l.text)).size;
+
+// The rest of the island beyond the detailed city (js/city-tiles.js: tiles/<city>/index.json's land, roads.json's main
+// roads), set once they arrive: land, lakes, the expressways & main roads by class
+const ISLAND = { land: null, lakes: null, highways: null, roads: null, bounds: null, version: 0 };
+function setIslandLayers({ land = [], roads = null } = {}) {
+  ISLAND.land = new Path2D();
+  ISLAND.lakes = new Path2D();
+  const b = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+  for (const [outer, ...holes] of land) {
+    addRing(ISLAND.land, outer);
+    for (const h of holes) addRing(ISLAND.lakes, h);
+    const ob = boundsOf(outer);
+    b.minX = Math.min(b.minX, ob.minX); b.maxX = Math.max(b.maxX, ob.maxX);
+    b.minZ = Math.min(b.minZ, ob.minZ); b.maxZ = Math.max(b.maxZ, ob.maxZ);
+  }
+  ISLAND.bounds = Number.isFinite(b.minX) ? b : null;
+  if (roads) {
+    // [highways (motorway & trunk), primary, secondary, tertiary]
+    ISLAND.highways = new TiledLayer(2000);
+    ISLAND.roads = [new TiledLayer(2000), new TiledLayer(2000), new TiledLayer(2000)];
+    const named = new Map();
+    for (const r of roads.roads) {
+      const cls = roads.classes[r[0]];
+      const pts = [];
+      let x = 0, z = 0;
+      for (let k = 2; k < r.length; k += 2) { x += r[k]; z += r[k + 1]; pts.push(x, z); }
+      if (cls === 'motorway' || cls === 'trunk') ISLAND.highways.line(pts);
+      else ISLAND.roads[cls === 'primary' ? 0 : cls === 'secondary' ? 1 : 2].line(pts);
+      // labels for the named expressways & main roads
+      if (r[1] >= 0 && cls !== 'tertiary') {
+        const name = roads.names[r[1]];
+        const list = named.get(name) || [];
+        list.push({ pts, highway: cls === 'motorway' || cls === 'trunk' });
+        named.set(name, list);
+      }
+    }
+    for (const [name, list] of named) {
+      for (const { pts, highway } of list) {
+        const P = [];
+        for (let k = 0; k < pts.length; k += 2) P.push({ x: pts[k], z: pts[k + 1] });
+        addRoadLabel({ name, pts: P, highway, w: highway ? 20 : 15 });
+      }
+    }
+    ROAD_NAME_COUNT = new Set(ROAD_LABELS.map((l) => l.text)).size;
+  }
+  ISLAND.version++;
+}
+
+// Buildings of the island tiles streamed in so far (js/city-tiles.js onTileOutlines), by height as FOOTPRINTS
+const TILE_FOOTPRINTS = { tones: [new TiledLayer(), new TiledLayer(), new TiledLayer()], keys: new Set(), version: 0 };
+function addTileFootprints(key, ox, oz, { pts, offsets, tops }) {
+  if (TILE_FOOTPRINTS.keys.has(key)) return; // (a tile dropped & streamed in again)
+  TILE_FOOTPRINTS.keys.add(key);
+  for (let k = 0; k + 1 < offsets.length; k++) {
+    const ring = [];
+    for (let i = offsets[k]; i < offsets[k + 1]; i++) ring.push(ox + pts[i * 2], oz + pts[i * 2 + 1]);
+    TILE_FOOTPRINTS.tones[tops[k] > 95 ? 2 : tops[k] > 45 ? 1 : 0].ring(ring);
+  }
+  TILE_FOOTPRINTS.version++;
+}
 
 /** A map viewport: centre (cx, cz) in world metres, s pixels per metre, w x h CSS pixels on a canvas of pixel ratio dpr */
 class MapView {
@@ -522,6 +593,16 @@ class NYCMapSystem {
     this.initEvents();
   }
 
+  // The rest of the island (js/city-tiles.js): its land & main roads, then each tile's buildings as it streams in
+  setIsland(island) {
+    setIslandLayers(island);
+    if (this.elSearchInput) this.elSearchInput.placeholder = `Search ${ROAD_NAME_COUNT} streets & landmarks…`;
+  }
+
+  addTile(key, ox, oz, outlines) {
+    addTileFootprints(key, ox, oz, outlines);
+  }
+
   initEvents() {
     const closeBtn = document.getElementById('close-fullmap-btn');
     const miniCard = document.getElementById('minimap-card');
@@ -560,8 +641,8 @@ class NYCMapSystem {
     }
     if (fullIslandBtn) {
       fullIslandBtn.addEventListener('click', () => {
-        // Fits all of Manhattan, from the Harlem River to the Battery
-        const b = ISLAND_BOUNDS;
+        // Fits all of Manhattan, from the Harlem River to the Battery (or the whole island beyond a detailed city)
+        const b = ISLAND.bounds || ISLAND_BOUNDS;
         const { w, h } = this.fullSize();
         this.viewCenterX = (b.minX + b.maxX) * 0.5;
         this.viewCenterZ = (b.minZ + b.maxZ) * 0.5;
@@ -775,8 +856,10 @@ class NYCMapSystem {
     };
   }
 
-  // Teleports land on Manhattan: inside the island's extent at that latitude
+  // Teleports land on Manhattan: inside the island's extent at that latitude (anywhere on the island once its land is
+  // known: the helicopter arrives over it, the others at its nearest street in the detailed city)
   clampToManhattan(p) {
+    if (ISLAND.bounds && CITY.open) return p;
     const z = Math.max(ISLAND_BOUNDS.minZ + 25, Math.min(ISLAND_BOUNDS.maxZ - 25, p.z));
     const shore = getIslandBoundsAtZ(z);
     return { x: Math.max(shore.westX + 12, Math.min(shore.eastX - 12, p.x)), z };
@@ -804,6 +887,19 @@ class NYCMapSystem {
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
+    // 0. The rest of the island (js/city-tiles.js), its lakes & reservoirs
+    if (ISLAND.land) {
+      ctx.fillStyle = MAP.land;
+      ctx.fill(ISLAND.land);
+      ctx.fillStyle = MAP.water;
+      ctx.fill(ISLAND.lakes);
+      if (!isMinimap) {
+        ctx.lineWidth = px(1.4);
+        ctx.strokeStyle = MAP.landEdge;
+        ctx.stroke(ISLAND.land);
+      }
+    }
+
     // 1. Land around the harbour & the islands
     ctx.fillStyle = MAP.land;
     ctx.fill(L.fillers);
@@ -826,6 +922,19 @@ class NYCMapSystem {
     ctx.strokeStyle = MAP.shore;
     ctx.lineWidth = px(isMinimap ? 1.6 : 2.0);
     ctx.stroke(L.manhattan);
+    ctx.fillStyle = MAP.water;
+    ctx.fill(L.inlandWater);
+
+    // 2b. The island's main roads as lines (to scale where they're wider than a pixel), under the detailed city
+    if (ISLAND.roads) {
+      ctx.strokeStyle = MAP.mainRoads;
+      const widths = [14, 11, 8];
+      for (let i = 2; i >= 0; i--) {
+        if (i === 2 && s < 0.04) continue; // tertiary roads only once zoomed in
+        ctx.lineWidth = Math.max(px(i === 0 ? 1.2 : 0.8), widths[i]);
+        ISLAND.roads[i].each(v, (p) => ctx.stroke(p));
+      }
+    }
 
     // 3. Parkland, blocks (curb islands) and park blocks
     ctx.fillStyle = MAP.park;
@@ -878,6 +987,14 @@ class NYCMapSystem {
       }
     }
 
+    // 5b. The island tiles' buildings streamed in so far
+    if (s >= 0.18 && TILE_FOOTPRINTS.version) {
+      for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = MAP.buildings[i];
+        TILE_FOOTPRINTS.tones[i].each(v, (p) => ctx.fill(p));
+      }
+    }
+
     // 6. Landmark lots (real OpenStreetMap outlines)
     if (s >= 0.05) {
       ctx.fillStyle = MAP.block;
@@ -896,10 +1013,14 @@ class NYCMapSystem {
       L.mainRoads.each(v, (p) => ctx.stroke(p));
     }
 
-    // 8. Shore highways
+    // 8. Shore highways (and the island's expressways)
     ctx.strokeStyle = MAP.highway;
     ctx.lineWidth = Math.max(px(isMinimap ? 2.4 : 1.6), 14);
     ctx.stroke(L.highways);
+    if (ISLAND.highways) {
+      ctx.lineWidth = Math.max(px(isMinimap ? 2 : 1.4), 16);
+      ISLAND.highways.each(v, (p) => ctx.stroke(p));
+    }
 
     // 9. Bridges
     ctx.strokeStyle = MAP.bridge;
@@ -1030,7 +1151,7 @@ class NYCMapSystem {
     // Ground layers & street names come from a cached render twice the radar's size, redrawn when the player nears its
     // edge or the zoom drifts (or the buildings arrive)
     const fp = footprintLayers(this.allBlocks);
-    const version = fp ? fp.version : 0;
+    const version = `${fp ? fp.version : 0}|${ISLAND.version}|${TILE_FOOTPRINTS.version}`;
     let c = this.miniCache;
     if (!c || c.version !== version || Math.abs(scale / c.s - 1) > 0.12 ||
       Math.abs(px - c.cx) > w / c.s - w / (2 * scale) - 8 / scale ||
@@ -1152,7 +1273,7 @@ class NYCMapSystem {
 
     // Ground layers, names & landmark pins: re-rendered only when the view, the search or the buildings change
     const fp = footprintLayers(this.allBlocks);
-    const key = `${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}`;
+    const key = `${v.cx}|${v.cz}|${v.s}|${this.fullCanvas.width}|${this.fullCanvas.height}|${this.searchHighlight}|${fp ? fp.version : 0}|${ISLAND.version}|${TILE_FOOTPRINTS.version}`;
     if (!this.fullStatic) this.fullStatic = document.createElement('canvas');
     if (key !== this.fullStaticKey) {
       this.fullStaticKey = key;

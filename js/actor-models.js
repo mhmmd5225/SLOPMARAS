@@ -997,8 +997,9 @@ function carPlateTexture(plate = NYC_VEHICLES.plate) {
 /**
  * Creates the TSL material for lofted vehicles.
  * Instanced traffic reads the per-instance `paintColor` (vec3) and `carState` (vec4: brake, left (+x) & right (-x)
- * turn signal, livery: 1 = NYPD) attributes; with a fixed `fixedColorHex` (the player's taxi, wheels) the state is the
- * `material.userData.carState` uniform instead. `livery`: the city's taxi badges & plates (CITY.vehicles).
+ * turn signal, livery: 1 = police) attributes; with a fixed `fixedColorHex` (the player's taxi, wheels) the state is the
+ * `material.userData.carState` uniform instead, with its fourth component controlling reverse lights. `livery`: the
+ * city's taxi badges & plates (CITY.vehicles).
  * Every mask is built once and shared by the colour, roughness, metalness & emissive graphs (TSL turns nodes used
  * more than once into temporaries), so the fragment shader evaluates each SDF a single time.
  */
@@ -1179,7 +1180,7 @@ function createLoftedCarMaterial(spec, fixedColorHex = null, livery = NYC_VEHICL
   // ---- Colour ---------------------------------------------------------------------------------------------------
   // Liveries: NYPD (white with blue & light-blue side stripes, lettering on the front doors); the taxi's door badges
   // and medallion number
-  const isPolice = step(0.5, state.w).mul(isSide).mul(isBody);
+  const isPolice = (fixed ? float(0) : step(0.5, state.w)).mul(isSide).mul(isBody);
   const doorMid = (spec.doors[0] + spec.doors[1]) / 2;
   const along = smoothstep(spec.zRear + 0.22, spec.zRear + 0.3, p.z).mul(smoothstep(spec.zFront - 0.28, spec.zFront - 0.36, p.z));
   const band = smoothstep(0.495, 0.5, p.y).mul(smoothstep(0.645, 0.64, p.y)).mul(along);
@@ -1279,7 +1280,7 @@ function createLoftedCarMaterial(spec, fixedColorHex = null, livery = NYC_VEHICL
   metal = mix(metal, float(0.08), plates);
   metal = mix(metal, float(0.04), max(matte, isSign));
 
-  // ---- Emissive: running lights, tail / brake lights & CHMSL, turn signals, taxi roof light -----------------------
+  // ---- Emissive: running, brake, reverse & turn lights, CHMSL, taxi roof light -----------------------------------
   const brake = state.x;
   const blink = max(state.y.mul(step(0.0, p.x)), state.z.mul(step(p.x, 0.0)));
   const nightHeadlamp = smoothstep(0.60, 1.15, cityUniforms.uInteriorGlow);
@@ -1298,6 +1299,7 @@ function createLoftedCarMaterial(spec, fixedColorHex = null, livery = NYC_VEHICL
   mat.roughnessNode = rough;
   mat.metalnessNode = metal;
   mat.emissiveNode = headlamps.add(tail).add(stop).add(turn).add(sign);
+  if (fixed) mat.emissiveNode = mat.emissiveNode.add(color(0xf0f6ff).mul(tailLens).mul(reverseRearSection).mul(state.w).mul(1.8));
 
   _carMaterialCache.set(cacheKey, mat);
   return mat;

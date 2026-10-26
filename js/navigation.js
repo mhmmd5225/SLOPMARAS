@@ -8,7 +8,7 @@ import { signalPhase, nearestRoads } from './city-config.js';
 // - self: a cautious self-driving taxi — pure-pursuit steering and a speed profile from the path's curvature, it keeps
 //   its lane, stops for red (and amber it can stop for) lights, follows the vehicle ahead and waits for people in the
 //   road
-// - crazy: a Crazy Taxi driver on the clock — boost, every light is green, it swerves around anything slower into
+// - crazy: a Crazy Taxi driver on the clock — flat out, every light is green, it swerves around anything slower into
 //   whichever lane is free (the oncoming ones too), honks, and scores near misses into the fare
 // The autopilots drive the player's own car through the same inputs as the keyboard (controllers.js
 // setAutopilotInput), so the car's physics, collisions and the traffic's reactions to it are the ordinary ones.
@@ -19,10 +19,13 @@ import { signalPhase, nearestRoads } from './city-config.js';
 
 const SAMPLE = 3; // metres between path points along an edge
 const CURVE_SAMPLE = 1.5; // and along an intersection curve
-// The car (controllers.js): steering up to 0.52 rad turns the heading at 2.4 x steer x min(1, v / 8) rad/s
-const MAX_STEER = 0.52;
-const STEER_RATE = 2.4;
-const TURN_RATE = MAX_STEER * STEER_RATE;
+// The car (controllers.js): a bicycle model on a 2.76 m wheelbase, steering up to 0.6 rad at parking speeds and less
+// with speed (so its tyres corner at up to 10.5 m/s²), 9.5 m/s² of grip for braking and cornering together
+const WHEELBASE = 2.76;
+const CORNERING = 10.5;
+const MAX_LOCK = 0.6;
+const maxSteerAt = (v) => Math.atan((WHEELBASE * CORNERING) / Math.max(v * v, (WHEELBASE * CORNERING) / Math.tan(MAX_LOCK)));
+const MAX_CURVATURE = Math.tan(MAX_LOCK) / WHEELBASE;
 const CAR_HALF_L = 2.2;
 const CAR_HALF_W = 0.9;
 
@@ -32,13 +35,13 @@ const DRIVERS = {
     id: 'self', label: 'Self-driving', auto: true, offRoute: 14,
     cruise: 13.9, // 50 km/h, Singapore's default urban limit
     aLat: 2.0, brake: 2.6, hardBrake: 7, gap0: 4.0, gapTime: 1.3, margin: 0.45,
-    signals: true, peds: true, boost: false, lookahead: [4.5, 0.42], turnPenalty: 8, signalPenalty: 12
+    signals: true, peds: true, lookahead: [4.5, 0.42], turnPenalty: 8, signalPenalty: 12
   },
   crazy: {
     id: 'crazy', label: 'Crazy Taxi', auto: true, offRoute: 20,
     cruise: 34,
-    aLat: 9.5, brake: 7.5, hardBrake: 9, gap0: 1.2, gapTime: 0.25, margin: 0.15,
-    signals: false, peds: false, boost: true, lookahead: [5, 0.5], turnPenalty: 14, signalPenalty: 0
+    aLat: 8.0, brake: 7.0, hardBrake: 9, gap0: 1.2, gapTime: 0.25, margin: 0.15,
+    signals: false, peds: false, lookahead: [5, 0.5], turnPenalty: 14, signalPenalty: 0
   }
 };
 
@@ -354,7 +357,8 @@ function speedProfile(path, driver) {
   const b = driver.brake ?? 3;
   for (const p of pts) {
     const k = Math.max(p.k, 1e-4);
-    p.v = Math.min(cruise, Math.sqrt(aLat / k), (TURN_RATE * 0.85) / k);
+    // (a corner tighter than full lock allows is taken at a crawl)
+    p.v = k > MAX_CURVATURE * 0.9 ? Math.min(cruise, 2.5) : Math.min(cruise, Math.sqrt(aLat / k));
   }
   if (pts.length) pts[pts.length - 1].v = 0;
   for (let i = pts.length - 2; i >= 0; i--) {
@@ -422,10 +426,10 @@ function pursuitSteer(x, z, heading, speed, tx, tz) {
   if (Ld < 0.05) return 0;
   const alpha = wrapAngle(Math.atan2(dx, dz) - heading);
   const v = Math.abs(speed);
-  if (v < 1.5) return clamp(alpha * 2.5, -1, 1);
+  // the wheel angle whose arc runs through the target, as a share of what the car allows at this speed
   const curvature = (2 * Math.sin(alpha)) / Ld;
-  const steer = (v * curvature) / (STEER_RATE * Math.min(1, v / 8));
-  return clamp(steer / MAX_STEER, -1, 1) * Math.sign(speed || 1);
+  const steer = Math.atan(curvature * WHEELBASE) / maxSteerAt(v);
+  return clamp(steer, -1, 1) * Math.sign(speed || 1);
 }
 
 // Throttle / brake for a speed target: forward or backward strength 0..1 (backward only brakes while moving)
@@ -472,7 +476,7 @@ class Navigator {
     this.reverseTime = 0;
     this.lastSpeed = 0;
     this.status = '';
-    this.input = { forward: 0, backward: 0, left: 0, right: 0, boost: false };
+    this.input = { forward: 0, backward: 0, left: 0, right: 0 };
     this.honkTimer = 0;
     // Crazy Taxi
     this.fare = null; // { start, base, bonus, timeLeft, nearMisses, combo, crashes }
@@ -621,7 +625,7 @@ class Navigator {
     if (this.arrived) {
       // pull up at the drop-off, then hand the car back
       const braking = this.driver.auto && mode === 'car' && ent.speed > 0.3 && this.controllers.userDriveInput() < 0.15;
-      this.controllers.setAutopilotInput(braking ? { forward: 0, backward: 0.7, left: 0, right: 0, boost: false } : null);
+      this.controllers.setAutopilotInput(braking ? { forward: 0, backward: 0.7, left: 0, right: 0 } : null);
       if (this.nextFareAt && this.time >= this.nextFareAt) {
         this.nextFareAt = 0;
         this.event('nextfare', {});
@@ -752,7 +756,7 @@ class Navigator {
       this.reverseTime -= dt;
       const target = pointAt(path, s + 8, this.offset, this._pt);
       const steer = -pursuitSteer(x, z, car.heading, 2, target.x, target.z);
-      this.setInput(0, 0.7, steer, false);
+      this.setInput(0, 0.7, steer);
       this.status = 'Backing up';
       return;
     }
@@ -900,18 +904,16 @@ class Navigator {
     }
 
     const pedal = speedControl(v, vTarget, hard || d.id === 'crazy');
-    const boost = d.boost && vTarget > 14 && pedal.forward > 0.4;
-    this.setInput(pedal.forward, pedal.backward, steer, boost);
+    this.setInput(pedal.forward, pedal.backward, steer);
     this.status = reason;
   }
 
-  setInput(forward, backward, steer, boost) {
+  setInput(forward, backward, steer) {
     const i = this.input;
     i.forward = forward;
     i.backward = backward;
     i.left = steer > 0 ? steer : 0;
     i.right = steer < 0 ? -steer : 0;
-    i.boost = boost;
     this.controllers.setAutopilotInput(i);
   }
 

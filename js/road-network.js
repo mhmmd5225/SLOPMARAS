@@ -1,8 +1,6 @@
 import {
   ALL_AVENUES,
   ALL_STREETS,
-  AVENUES,
-  STREETS,
   ISLAND_BOUNDS,
   getIslandBoundsAtZ,
   BLOCKS,
@@ -35,7 +33,7 @@ const ACROSS = KEEP > 0 ? 'L' : 'R';
 // Lane offsets measured to the right (sorted left to right) kept to the side traffic keeps to
 const keepSide = (offsets) => (KEEP > 0 ? offsets : offsets.map((o) => -o).reverse());
 
-function buildRoadNetwork(sidewalks, obstacles) {
+function buildRoadNetwork(sidewalks, obstacles, signalIntersections = []) {
   // 1. Spatial hash of ground footprints: curbs bound the roads, everything else also blocks pedestrians
   const hash = new Map();
   const cellKey = (ix, iz) => (ix + 512) * 1024 + iz + 512;
@@ -74,7 +72,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
     return true;
   }
 
-  const blocked = (minX, maxX, minZ, maxZ) => !onLand(minX, maxX, minZ, maxZ) || query(minX, maxX, minZ, maxZ, () => true);
+  const blocked = (minX, maxX, minZ, maxZ) => !onLand(minX, maxX, minZ, maxZ) || query(minX, maxX, minZ, maxZ, (r) => !r.pedestrianOnly);
   const walkable = (minX, maxX, minZ, maxZ) => onLand(minX, maxX, minZ, maxZ) && !query(minX, maxX, minZ, maxZ, (r) => !r.curb);
   // a curb given by its outline (an irregular block of a city built from OpenStreetMap) holds just the points inside it
   const curbAt = (r, x, z) => r.curb && (!r.poly || insidePoly(r.poly, x, z));
@@ -116,7 +114,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
   const blockedOnStreet = (x, z, clear) => !onLand(x - clear, x + clear, z - clear, z + clear) ||
     query(x - 0.3, x + 0.3, z - 0.3, z + 0.3, (r) => curbAt(r, x, z)) ||
     nearMedian(x, z, clear) ||
-    query(x - clear, x + clear, z - clear, z + clear, (r) => !r.curb && (r.maxX - r.minX < 50 || r.maxZ - r.minZ < 50) && !medianBox(r));
+    query(x - clear, x + clear, z - clear, z + clear, (r) => !r.curb && !r.pedestrianOnly && (r.maxX - r.minX < 50 || r.maxZ - r.minZ < 50) && !medianBox(r));
 
   // 2. Avenue corridors: the most common curb-to-curb gap around each avenue's nominal x along its own stretches
   //    (CSCL: an avenue only exists between its ends, e.g. Irving Pl 14th-20th St, so it never claims a neighbour's
@@ -1099,11 +1097,9 @@ function buildRoadNetwork(sidewalks, obstacles) {
 
   // 8. Signalized intersections are exactly the ones with signal heads (street-details.js), and in a city built from
   //    OpenStreetMap the junctions its red light cameras watch (GEO.enforcement; open-city-enforcement.js heads them)
-  for (const a of AVENUES) {
-    for (const s of STREETS) {
-      const n = nodes.find((m) => Math.abs(m.x - a.x) < 4 && Math.abs(m.z - s.z) < 4);
-      if (n) n.signal = true;
-    }
+  for (const s of signalIntersections) {
+    const n = nodes.find((m) => Math.abs(m.x - s.x) < 6 && Math.abs(m.z - s.z) < 6); // same tolerance as nodeAt
+    if (n) n.signal = true;
   }
   const watched = OPEN_CITY && GEO.enforcement ? GEO.enforcement.redLight : [];
   for (let i = 0; i < watched.length; i += 4) {

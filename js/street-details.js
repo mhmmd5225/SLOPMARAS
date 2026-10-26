@@ -4,6 +4,8 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   AVENUES,
   STREETS,
+  ALL_AVENUES,
+  ALL_STREETS,
   streetZ,
   SIGNAL_TIMING,
   blockAt,
@@ -19,7 +21,7 @@ import { bryantParkLawn } from './landmarks.js';
 
 // js/street-details.js
 // Populates Manhattan streets with authentic NYC street furniture using InstancedMesh:
-// - Cantilevered NYC Yellow Traffic Signals at all 63 intersections
+// - Cantilevered NYC Yellow Traffic Signals at numbered-street intersections
 // - NYC DOT Cobra-head LED Streetlights
 // - Con Edison Orange/White Steam Stacks + Volumetric TSL Rising Steam Plumes
 // - MTA Subway Stair Entrances with Glowing Green Globe Lamps
@@ -112,7 +114,7 @@ function buildStreetDetails(scene) {
 
   // Ground footprints of street furniture that traffic and pedestrians must keep clear of
   const footprints = [];
-  const addFootprint = (x, z, w, d) => footprints.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+  const addFootprint = (x, z, w, d, pedestrianOnly = false) => footprints.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, pedestrianOnly });
 
   // Signal clock (seconds), set every frame by main.js
   const signalClock = uniform(0);
@@ -185,11 +187,22 @@ function buildStreetDetails(scene) {
   const streetBladeMatrices = [];
   const walkBoxMatrices = [];
   const audioSignals = [];
+  const signalIntersections = [];
   const lampHeadMatrices = [];
   const pedPostMatrices = [];
   const cobraLampSites = [];
   const streetPointSites = [];
-  const placedPoles = [];
+  // Only nearby poles can conflict, even with street furniture across the whole island.
+  const POLE_CELL = 8;
+  const poleCells = new Map();
+  function addPole(x, z, width) {
+    const key = Math.floor(x / POLE_CELL) + ',' + Math.floor(z / POLE_CELL);
+    let cell = poleCells.get(key);
+    if (!cell) poleCells.set(key, cell = []);
+    cell.push({ x, z });
+    // Poles stand on curbs: pedestrians avoid them, but they must not narrow the inferred road gaps.
+    addFootprint(x, z, width, width, true);
+  }
 
   const plazaRects = pavedPlazaRects || [];
   const inPlaza = (x, z, m = 1.0) =>
@@ -216,20 +229,27 @@ function buildStreetDetails(scene) {
 
   const isClearOfPoles = (x, z, minDist = 6.0) => {
     const md2 = minDist * minDist;
-    for (let i = 0; i < placedPoles.length; i++) {
-      const dx = placedPoles[i].x - x;
-      const dz = placedPoles[i].z - z;
-      if (dx * dx + dz * dz < md2) return false;
+    for (let ix = Math.floor((x - minDist) / POLE_CELL); ix <= Math.floor((x + minDist) / POLE_CELL); ix++) {
+      for (let iz = Math.floor((z - minDist) / POLE_CELL); iz <= Math.floor((z + minDist) / POLE_CELL); iz++) {
+        for (const p of poleCells.get(ix + ',' + iz) || []) {
+          if ((p.x - x) ** 2 + (p.z - z) ** 2 < md2) return false;
+        }
+      }
     }
     return true;
   };
 
-  for (let a = 0; a < AVENUES.length; a++) {
-    const ave = AVENUES[a];
-    for (let s = 0; s < STREETS.length; s++) {
-      const st = STREETS[s];
-      const cornerOffsetX = ave.width * 0.5 + 1.25;
-      const cornerOffsetZ = st.width * 0.5 + 1.25;
+  // Use each avenue's local width and the street's real runs, including gaps at Central Park and road ends.
+  for (const ave of ALL_AVENUES) {
+    if (ave.isHighway) continue;
+    for (const st of ALL_STREETS) {
+      const avenueRun = ave.segs?.find((s) => st.z >= s.z0 && st.z <= s.z1);
+      const streetRun = st.runs?.find((s) => ave.x >= s[0] && ave.x <= s[1]);
+      if (!avenueRun || !streetRun) continue;
+      // A median avenue spans both carriageways and the planted mall between them.
+      const cornerOffsetX = (ave.hasMedian ? 33 : avenueRun.w) * 0.5 + 1.25;
+      const cornerOffsetZ = streetRun[3] * 0.5 + 1.25;
+      let placedSignal = false;
 
       // Place diagonal pair of traffic signal masts at NE and SW corners of every intersection
       const corners = [
@@ -253,8 +273,11 @@ function buildStreetDetails(scene) {
         }
         // Ensure the cantilevered mast arm actually overhangs the avenue roadway
         if (blockAt(px + c.armDir * 3.1, pz) || !isClearOfPoles(px, pz, 6.0)) continue;
-        placedPoles.push({ x: px, z: pz });
-        addFootprint(px, pz, 0.5, 0.5);
+        addPole(px, pz, 0.5);
+        if (!placedSignal) {
+          signalIntersections.push({ x: ave.x, z: st.z });
+          placedSignal = true;
+        }
 
         // Vertical pole (6.4m tall)
         dummy.position.set(px, 3.3, pz);
@@ -319,12 +342,9 @@ function buildStreetDetails(scene) {
   //    and verified with blockAt(x, z) so no pole ever stands in any roadway.
   // =========================================================================
   const allBlocks = BLOCKS || [];
-  const detailZMin = streetZ(61);
-  const detailZMax = streetZ(14);
 
   for (const b of allBlocks) {
     if (!b || !b.poly || b.poly.length < 3 || b.median || b.park > 0.6) continue;
-    if (b.cz < detailZMin || b.cz > detailZMax || b.cx < -920 || b.cx > 920) continue;
 
     const poly = b.poly;
     for (let i = 0; i < poly.length; i++) {
@@ -372,8 +392,7 @@ function buildStreetDetails(scene) {
           ) {
             continue;
           }
-          placedPoles.push({ x: lx, z: lz });
-          addFootprint(lx, lz, 0.45, 0.45);
+          addPole(lx, lz, 0.45);
 
           // Tall ornamental streetlight pole
           dummy.position.set(lx, 4.3, lz);
@@ -420,8 +439,7 @@ function buildStreetDetails(scene) {
           ) {
             continue;
           }
-          placedPoles.push({ x: px, z: pz });
-          addFootprint(px, pz, 0.4, 0.4);
+          addPole(px, pz, 0.4);
 
           dummy.position.set(px, 0.18, pz);
           dummy.rotation.set(0, 0, 0);
@@ -452,8 +470,7 @@ function buildStreetDetails(scene) {
           ) {
             continue;
           }
-          placedPoles.push({ x: px, z: pz });
-          addFootprint(px, pz, 0.4, 0.4);
+          addPole(px, pz, 0.4);
 
           dummy.position.set(px, 0.18, pz);
           dummy.rotation.set(0, 0, 0);
@@ -1073,9 +1090,7 @@ function buildStreetDetails(scene) {
   const STREETLIGHT_SPOT_POOL = 36;
   const STREET_POINT_POOL = 48;
   const STREETLIGHT_DIST = 115;
-  const STREETLIGHT_DIST_SQ = STREETLIGHT_DIST * STREETLIGHT_DIST;
   const STREET_POINT_DIST = 110;
-  const STREET_POINT_DIST_SQ = STREET_POINT_DIST * STREET_POINT_DIST;
 
   const streetLightsGroup = new THREE.Group();
   streetLightsGroup.name = 'StreetClusteredLights';
@@ -1097,6 +1112,44 @@ function buildStreetDetails(scene) {
     pt.position.set(0, -1000, 0);
     streetLightsGroup.add(pt);
     streetPointPool.push(pt);
+  }
+
+  // Source positions are static. Query nearby cells instead of scanning the island every frame.
+  const LIGHT_CELL = 128;
+  function indexLights(sites) {
+    const cells = new Map();
+    for (const s of sites) {
+      const key = Math.floor(s.x / LIGHT_CELL) + ',' + Math.floor(s.z / LIGHT_CELL);
+      let cell = cells.get(key);
+      if (!cell) cells.set(key, cell = []);
+      cell.push(s);
+    }
+    return cells;
+  }
+  const cobraCells = indexLights(cobraLampSites);
+  const pointCells = indexLights(streetPointSites);
+
+  function nearbyLights(cells, camera, range, active) {
+    const { x: cx, y: cy, z: cz } = camera.position;
+    const me = camera.matrixWorld.elements;
+    const fwdX = -me[8], fwdZ = -me[10];
+    let count = 0;
+    for (let ix = Math.floor((cx - range) / LIGHT_CELL); ix <= Math.floor((cx + range) / LIGHT_CELL); ix++) {
+      for (let iz = Math.floor((cz - range) / LIGHT_CELL); iz <= Math.floor((cz + range) / LIGHT_CELL); iz++) {
+        for (const s of cells.get(ix + ',' + iz) || []) {
+          const dx = s.x - cx, dz = s.z - cz;
+          const d2 = dx * dx + dz * dz + cy * cy;
+          if (d2 > range * range) continue;
+          const effDist = Math.sqrt(d2) + Math.max(0, 6.0 - dx * fwdX - dz * fwdZ) * 2.8;
+          if (effDist >= range) continue;
+          s._effDist = effDist;
+          active[count++] = s;
+        }
+      }
+    }
+    active.length = count;
+    if (count > 1) active.sort((a, b) => a._effDist - b._effDist);
+    return count;
   }
 
   const activeCobras = [];
@@ -1124,29 +1177,7 @@ function buildStreetDetails(scene) {
       return;
     }
 
-    const cx = camera.position.x;
-    const cy = camera.position.y;
-    const cz = camera.position.z;
-    const me = camera.matrixWorld.elements;
-    const fwdX = -me[8];
-    const fwdZ = -me[10];
-
-    let cobraCount = 0;
-    for (let i = 0; i < cobraLampSites.length; i++) {
-      const s = cobraLampSites[i];
-      const dx = s.x - cx;
-      const dz = s.z - cz;
-      const d2 = dx * dx + dz * dz + cy * cy;
-      if (d2 > STREETLIGHT_DIST_SQ) continue;
-      const d = Math.sqrt(d2);
-      const forwardDot = dx * fwdX + dz * fwdZ;
-      const effDist = d + Math.max(0, 6.0 - forwardDot) * 2.8;
-      if (effDist >= STREETLIGHT_DIST) continue;
-      s._effDist = effDist;
-      activeCobras[cobraCount++] = s;
-    }
-    activeCobras.length = cobraCount;
-    if (cobraCount > 1) activeCobras.sort((a, b) => a._effDist - b._effDist);
+    const cobraCount = nearbyLights(cobraCells, camera, STREETLIGHT_DIST, activeCobras);
 
     const cobraCutoff = cobraCount > STREETLIGHT_SPOT_POOL
       ? Math.min(STREETLIGHT_DIST, activeCobras[STREETLIGHT_SPOT_POOL]._effDist)
@@ -1166,22 +1197,7 @@ function buildStreetDetails(scene) {
       streetlightSpotPool[i].position.set(0, -1000, 0);
     }
 
-    let ptCount = 0;
-    for (let i = 0; i < streetPointSites.length; i++) {
-      const s = streetPointSites[i];
-      const dx = s.x - cx;
-      const dz = s.z - cz;
-      const d2 = dx * dx + dz * dz + cy * cy;
-      if (d2 > STREET_POINT_DIST_SQ) continue;
-      const d = Math.sqrt(d2);
-      const forwardDot = dx * fwdX + dz * fwdZ;
-      const effDist = d + Math.max(0, 6.0 - forwardDot) * 2.8;
-      if (effDist >= STREET_POINT_DIST) continue;
-      s._effDist = effDist;
-      activePoints[ptCount++] = s;
-    }
-    activePoints.length = ptCount;
-    if (ptCount > 1) activePoints.sort((a, b) => a._effDist - b._effDist);
+    const ptCount = nearbyLights(pointCells, camera, STREET_POINT_DIST, activePoints);
 
     const ptCutoff = ptCount > STREET_POINT_POOL
       ? Math.min(STREET_POINT_DIST, activePoints[STREET_POINT_POOL]._effDist)
@@ -1203,7 +1219,7 @@ function buildStreetDetails(scene) {
   }
 
   scene.add(group);
-  return { group, footprints, signalClock, audioSignals, update };
+  return { group, footprints, signalClock, signalIntersections, audioSignals, update };
 }
 
 export { buildStreetDetails };

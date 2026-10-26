@@ -290,9 +290,8 @@ class CameraSystem {
         t.look += (Math.max(-0.45, Math.min(0.45, t.yawRate * 0.32)) - t.look) * k;
         t.roll += (Math.max(-0.14, Math.min(0.14, -t.yawRate * v * 0.006)) - t.roll) * k;
         t.pitch += (Math.max(-0.06, Math.min(0.06, t.accel * 0.006)) - t.pitch) * k;
-        // wider at speed (and more so on boost) for the rush
-        const boost = this.controllerManager.keys?.boost && v > 5 ? 8 : 0;
-        const fovTarget = 72 + Math.min(1, v / 34) * 20 + boost;
+        // wider at speed, for the rush
+        const fovTarget = 72 + Math.min(1, v / 34) * 24;
         t.fov += (fovTarget - t.fov) * (1 - Math.exp(-dt * 3));
         if (Math.abs(this.camera.fov - t.fov) > 0.05) {
           this.camera.fov = t.fov;

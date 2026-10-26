@@ -14,12 +14,14 @@ const pick = (src, re, what) => {
   assert.ok(m, `${what} is present`);
   return m[0];
 };
-const { makeCurve, curvePoint, driveSpeed, CAR_DRIVE } = vm.runInNewContext(`
+const { makeCurve, curvePoint, updateCar } = vm.runInNewContext(`
   ${pick(roadSource, /function makeCurve\(e, i, f, j\) \{[\s\S]*?\n\}/, 'makeCurve')}
   ${pick(roadSource, /function curvePoint\(c, s, out\) \{[\s\S]*?\n\}/, 'curvePoint')}
   ${pick(carSource, /const CAR_DRIVE = \{[\s\S]*?\n\};/, 'CAR_DRIVE')}
-  ${pick(carSource, /function driveSpeed\(speed, throttle, boost, dt, drive\) \{[\s\S]*?\n\}/, 'driveSpeed')}
-  ({ makeCurve, curvePoint, driveSpeed, CAR_DRIVE });
+  ${pick(carSource, /function driveSpeed\(speed, throttle, dt, drive\) \{[\s\S]*?\n\}/, 'driveSpeed')}
+  // the player car's own update (ThirdPersonControllerManager.updateCar), run on a stand-in manager
+  function updateCar${pick(carSource, /  updateCar\(dt\) \{[\s\S]*?\n  \}/, 'updateCar').replace(/^  updateCar/, '')}
+  ({ makeCurve, curvePoint, updateCar });
 `, { Math, Float32Array });
 
 let phase = 'green';
@@ -84,22 +86,16 @@ function grid(n = 4, block = 100) {
   };
 }
 
-// The player's car as controllers.js moves it (speed model, steering lag, heading rate), on a frictionless world
+// The player's car, moved by controllers.js's own updateCar (grip, steering, slip), on open ground
 function makeCar(x, z, heading) {
-  return { position: { x, y: 0, z }, heading, speed: 0, steerAngle: 0, type: 'car' };
+  return {
+    position: { x, y: 0, z }, heading, speed: 0, steerAngle: 0, angularVel: 0, vx: 0, vz: 0, type: 'car',
+    pitchVel: 0, rollVel: 0, heaveY: 0, heaveVel: 0, wheelSpin: 0, wheels: [], carState: null,
+    chassisPivot: { rotation: { x: 0, z: 0 }, position: { y: 0 } }
+  };
 }
 function stepCar(c, keys, dt) {
-  let throttle = 0;
-  if (keys.forward) throttle = keys.forward;
-  else if (keys.backward) throttle = -keys.backward;
-  c.speed = driveSpeed(c.speed, throttle, keys.boost, dt, CAR_DRIVE);
-  let steer = 0;
-  if (keys.left) steer = keys.left;
-  if (keys.right) steer = -keys.right;
-  c.steerAngle += (steer * 0.52 - c.steerAngle) * Math.min(1, dt * 10);
-  if (Math.abs(c.speed) > 0.2) c.heading += c.steerAngle * 2.4 * Math.min(1, Math.abs(c.speed) / 8) * Math.sign(c.speed) * dt;
-  c.position.x += Math.sin(c.heading) * c.speed * dt;
-  c.position.z += Math.cos(c.heading) * c.speed * dt;
+  updateCar.call({ entities: { car: c }, keys, resolveHorizontalCollision() {}, getGroundHeight: () => 0 }, dt);
 }
 
 function rig(network, car, traffic = { cars: [], buses: [], peds: [] }) {
@@ -108,7 +104,7 @@ function rig(network, car, traffic = { cars: [], buses: [], peds: [] }) {
     activeMode: 'car',
     getActiveEntity: () => car,
     setAutopilotInput: (input) => {
-      for (const k of ['forward', 'backward', 'left', 'right', 'boost']) keys[k] = input ? input[k] : 0;
+      for (const k of ['forward', 'backward', 'left', 'right']) keys[k] = input ? input[k] : 0;
     },
     userDriveInput: () => 0
   };
@@ -282,7 +278,7 @@ test('touching the controls hands the car back', () => {
   assert.ok(!r.keys.forward && !r.keys.left && !r.keys.right, 'autopilot input released');
 });
 
-test('Crazy Taxi gets there much faster than the self-driving taxi, through the reds, and is paid for it', () => {
+test('Crazy Taxi gets there much faster than the self-driving taxi, and is paid for it', () => {
   const times = {};
   for (const driver of ['self', 'crazy']) {
     phase = 'green';
@@ -301,7 +297,7 @@ test('Crazy Taxi gets there much faster than the self-driving taxi, through the 
       assert.ok(done.fare && done.fare.total > done.fare.base, `fare ${done.fare && done.fare.total}`);
     }
   }
-  assert.ok(times.crazy.top > 25, `Crazy Taxi boosts (${times.crazy.top.toFixed(1)} m/s)`);
+  assert.ok(times.crazy.top > 25, `Crazy Taxi floors it (${times.crazy.top.toFixed(1)} m/s)`);
   assert.ok(times.self.top < 14.5, `self-driving keeps to 50 km/h (${times.self.top.toFixed(1)} m/s)`);
   assert.ok(times.crazy.t < times.self.t * 0.7, `faster: ${times.crazy.t.toFixed(0)} s vs ${times.self.t.toFixed(0)} s`);
 });
