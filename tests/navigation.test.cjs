@@ -298,8 +298,8 @@ test('Crazy Taxi gets there much faster than the self-driving taxi, and is paid 
     }
   }
   assert.ok(times.crazy.top > 25, `Crazy Taxi floors it (${times.crazy.top.toFixed(1)} m/s)`);
-  assert.ok(times.self.top < 14.5, `self-driving keeps to 50 km/h (${times.self.top.toFixed(1)} m/s)`);
-  assert.ok(times.crazy.t < times.self.t * 0.7, `faster: ${times.crazy.t.toFixed(0)} s vs ${times.self.t.toFixed(0)} s`);
+  assert.ok(times.self.top < 25.2, `self-driving keeps to 90 km/h (${(times.self.top * 3.6).toFixed(0)} km/h)`);
+  assert.ok(times.crazy.t < times.self.t * 0.85, `faster: ${times.crazy.t.toFixed(0)} s vs ${times.self.t.toFixed(0)} s`);
 });
 
 test('self-driving goes round stalled cars through the clear oncoming lane after waiting a while', () => {
@@ -326,8 +326,10 @@ function track(driver, dest, { dt = 1 / 60, T = 240, cars = [], each = null, sta
   let lastSteer = 0;
   let t = 0;
   let minSpeed = Infinity;
+  let topSpeed = 0;
   while (t < T && !r.navigator.arrived) {
     if (t > 5) minSpeed = Math.min(minSpeed, car.speed);
+    topSpeed = Math.max(topSpeed, car.speed);
     r.navigator.update(dt, t);
     stepCar(car, r.keys, dt);
     for (const v of cars) {
@@ -347,7 +349,7 @@ function track(driver, dest, { dt = 1 / 60, T = 240, cars = [], each = null, sta
       stats.maxErr = Math.max(stats.maxErr, err);
       // straight road: no curvature within 25 m either side
       const quiet = p.pts.every((q) => Math.abs(q.s - loc.s) > 25 || q.k < 0.004);
-      if (quiet && Math.abs(r.navigator.offsetTarget - r.navigator.offset) < 0.05) {
+      if (quiet && Math.abs(r.navigator.offsetTarget - r.navigator.offset) < 0.05 && !r.navigator.holdLane) {
         stats.straightErr = Math.max(stats.straightErr, err);
         const s = (r.keys.left || 0) - (r.keys.right || 0);
         if (Math.abs(s) > 0.08) {
@@ -363,6 +365,7 @@ function track(driver, dest, { dt = 1 / 60, T = 240, cars = [], each = null, sta
   stats.car = car;
   stats.navigator = r.navigator;
   stats.minSpeedAfter5 = minSpeed;
+  stats.topSpeed = topSpeed;
   return stats;
 }
 
@@ -402,15 +405,17 @@ test('self-driving follows a car that brakes to a stop and pulls away, keeping i
 
 test('self-driving brakes for a slower car that cuts in close ahead, without hitting it', () => {
   phase = 'green';
-  // out of sight until the taxi is up to speed, then in the next lane 14 m ahead, moving over into the taxi's
+  // out of sight until the taxi is up to speed, then in the next lane just ahead, moving over into the taxi's
   const lead = slowCar(5.4, -500, 4);
   let cut = false;
   const s = track('self', [1.8, 700], {
     T: 25, cars: [lead],
     each: (v, t, car) => {
+      // at a second's headway, doing half the taxi's speed
       if (!cut && t > 6) {
         cut = true;
-        v.z = car.position.z + 14 + 4.5;
+        v.z = car.position.z + 4.5 + car.speed * 1.0;
+        v.speed = car.speed * 0.5;
       }
       if (cut && v.x > 1.8) v.x = Math.max(1.8, v.x - 2 / 60);
     }
@@ -451,4 +456,94 @@ test('self-driving keeps going past cars in the next lane and oncoming ones', ()
   const s = track('self', [1.8, 700], { T: 30, cars: [beside, ...oncoming] });
   assert.ok(s.minSpeedAfter5 > 11, `never slows for them (${s.minSpeedAfter5.toFixed(1)} m/s)`);
   assert.ok(s.navigator.offsetTarget === 0, 'and stays in its lane');
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// 90 km/h: up to the limit on a long straight, and able to stop from it
+// ---------------------------------------------------------------------------------------------------------------------
+
+test('self-driving cruises at 90 km/h on a long clear road, no faster', () => {
+  phase = 'green';
+  let top = 0;
+  const s = track('self', [1.8, 1400], { net: grid(2, 750), T: 120 });
+  top = s.topSpeed;
+  assert.ok(s.arrived, 'arrived');
+  assert.ok(top > 24.5 && top < 25.2, `reaches 90 km/h (${(top * 3.6).toFixed(1)} km/h)`);
+  assert.ok(s.maxErr < 0.6, `in its lane at speed (${s.maxErr.toFixed(2)} m)`);
+});
+
+test('self-driving stops for a red light from 90 km/h', () => {
+  phase = 'green';
+  const net = grid(2, 750);
+  const car = makeCar(1.8, 20, 0);
+  const r = rig(net, car);
+  r.navigator.setDriver('self');
+  r.navigator.setDestination(1.8, 1450, 'x');
+  // up to speed, then the light at the end of the block turns red ~190 m out
+  let t = 0;
+  while (car.speed < 24.5 && t < 40) { r.navigator.update(1 / 60, t); stepCar(car, r.keys, 1 / 60); t += 1 / 60; }
+  const stop = r.navigator.path.stops[0];
+  while (stop.s - r.navigator.progress > 190) { r.navigator.update(1 / 60, t); stepCar(car, r.keys, 1 / 60); t += 1 / 60; }
+  phase = 'red';
+  let hardest = 0;
+  for (let i = 0; i < 60 * 20; i++) {
+    const v0 = car.speed;
+    r.navigator.update(1 / 60, t); stepCar(car, r.keys, 1 / 60); t += 1 / 60;
+    hardest = Math.max(hardest, (v0 - car.speed) * 60);
+  }
+  phase = 'green';
+  const short = stop.s - r.navigator.progress;
+  assert.ok(Math.abs(car.speed) < 0.3, `stopped (${car.speed.toFixed(2)} m/s)`);
+  assert.ok(short > 0 && short < 9, `at the line (${short.toFixed(1)} m short)`);
+  assert.ok(hardest < 4.5, `without slamming the brakes (${hardest.toFixed(1)} m/s²)`);
+});
+
+test('self-driving stops behind a stalled car from 90 km/h', () => {
+  phase = 'green';
+  const stalled = slowCar(1.8, 900, 0);
+  const s = track('self', [1.8, 1450], { net: grid(2, 750), T: 70, cars: [stalled] });
+  assert.ok(s.minGap > 1.5, `stops clear of it (${s.minGap.toFixed(2)} m)`);
+});
+
+test('self-driving follows traffic at its speed: settles behind a car doing 60 km/h', () => {
+  phase = 'green';
+  // its other lane blocked by a car alongside at the same speed, so it can only follow
+  const lead = slowCar(1.8, 200, 16.7);
+  const beside = slowCar(5.4, 200, 16.7);
+  let speedAt40 = 0;
+  const s = track('self', [1.8, 2200], {
+    net: grid(3, 750), T: 50, cars: [lead, beside],
+    each: (v, t, car) => { if (t > 40 && !speedAt40) speedAt40 = car.speed; }
+  });
+  assert.ok(Math.abs(speedAt40 - 16.7) < 1, `matches its speed (${(speedAt40 * 3.6).toFixed(0)} km/h)`);
+  assert.ok(s.minGap > 8, `at a safe distance (${s.minGap.toFixed(1)} m)`);
+});
+
+test('self-driving waits for a gap before moving over for a turn, instead of merging into a car alongside', () => {
+  phase = 'green';
+  // its route turns left at the end of the block, from the kerbside lane (x 5.4, keeping left); a car rides in that lane
+  // beside it
+  const net = grid(2, 300);
+  const car = makeCar(1.8, 20, 0);
+  const beside = slowCar(5.4, 20, 0);
+  const r = rig(net, car, { cars: [beside], buses: [], peds: [] });
+  r.navigator.setDriver('self');
+  assert.ok(r.navigator.setDestination(200, 300, 'east'), 'route found');
+  assert.ok(r.navigator.path.maneuvers.some((m) => m.turn === 'L'), 'the route turns left');
+  let overlap = 0;
+  let t = 0;
+  let changedAt = null;
+  while (t < 60 && !r.navigator.arrived) {
+    // the car alongside keeps pace until 200 m, then drops back
+    beside.speed = beside.z < 200 ? car.speed : Math.max(0, beside.speed - 4 / 60);
+    beside.z += beside.speed / 60;
+    r.navigator.update(1 / 60, t);
+    stepCar(car, r.keys, 1 / 60);
+    if (Math.abs(car.position.x - beside.x) < 1.9 && Math.abs(car.position.z - beside.z) < 4.6) overlap++;
+    if (changedAt === null && car.position.x > 3.6 && car.position.z < 300) changedAt = car.position.z;
+    t += 1 / 60;
+  }
+  assert.equal(overlap, 0, 'never in the same space as the car alongside');
+  assert.ok(changedAt === null || changedAt > 200, `moves over once it's clear (at z ${changedAt && changedAt.toFixed(0)})`);
+  assert.ok(r.navigator.arrived, 'and makes the turn');
 });
