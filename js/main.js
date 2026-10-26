@@ -23,6 +23,8 @@ import { NYCMapSystem } from './nyc-map.js';
 import { setupSceneCulling, updateSceneCulling } from './scene-culling.js';
 import { CityAudioSystem } from './audio-system.js';
 import { Weather } from './weather.js';
+import { Navigator } from './navigation.js';
+import { setupNavigationUI } from './navigation-ui.js';
 
 // js/main.js
 // Main entry point for the city simulation (Singapore by default, ?city=nyc for New York) in Three.js WebGPURenderer &
@@ -191,6 +193,8 @@ async function initApp() {
   }
 
   const cameraSystem = new CameraSystem(renderer.domElement, controllerManager);
+  // the taxi cockpit sits on the driver's side: the right in a city driving on the left
+  cameraSystem.driverSide = CITY.driveSide === 'left' ? 1 : -1;
   const touchControls = new TouchControls(controllerManager);
   const soundButton = document.getElementById('btn-sound');
   // A tropical city (Singapore) has its koels, cicadas and thunderstorms
@@ -350,7 +354,7 @@ async function initApp() {
   // Keyboard guide for each mode: [keys, action]
   const controlHints = {
     person: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Turn'], [['Shift'], 'Sprint'], [['Space'], 'Jump'], [['Drag'], 'Orbit']],
-    car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['Shift'], 'Boost'], [['B'], 'Horn'], [['Drag'], 'Orbit']],
+    car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['Shift'], 'Boost'], [['B'], 'Horn'], [['G'], 'Navigate'], [['Drag'], 'Orbit']],
     cyclist: [[['W', 'S'], 'Pedal / Brake'], [['A', 'D'], 'Lean & Turn'], [['Shift'], 'Sprint'], [['Drag'], 'Orbit']],
     helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend'], [['Shift'], 'Boost']]
   };
@@ -592,6 +596,11 @@ async function initApp() {
   const openMapBtn = document.getElementById('btn-open-map');
   if (openMapBtn) openMapBtn.addEventListener('click', () => mapSystem.toggleFullMap(true));
 
+  // Drive to a destination (js/navigation.js): turn-by-turn for you, or the self-driving or Crazy Taxi autopilot driving
+  // the car over the traffic's own road graph
+  const routeNavigator = new Navigator({ network: trafficSystem.network, trafficSystem, controllerManager, audioSystem });
+  const navigationUI = setupNavigationUI({ navigator: routeNavigator, mapSystem, controllerManager, selectMode, closePopovers });
+
   if (hudToggleBtn) {
     hudToggleBtn.addEventListener('click', () => {
       document.body.classList.toggle('hud-minimized');
@@ -637,6 +646,9 @@ async function initApp() {
       case 'Digit0':
         selectCamera('chryslerGCT', true);
         break;
+      case 'KeyT':
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) selectCamera('taxi', true);
+        break;
       case 'KeyV':
         cycleCamera(e.shiftKey ? -1 : 1);
         break;
@@ -648,6 +660,9 @@ async function initApp() {
         break;
       case 'KeyN':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) audioSystem.setEnabled(!audioSystem.enabled);
+        break;
+      case 'KeyG':
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !mapSystem.isFullMapOpen) navigationUI.toggleMenu();
         break;
       case 'KeyB':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !mapSystem.isFullMapOpen) audioSystem.honk(controllerManager.getActiveEntity());
@@ -758,7 +773,7 @@ async function initApp() {
   }
 
   // For poking at from the console (and the browser checks): the simulation's main systems
-  globalThis.slop = { scene, controllerManager, cameraSystem, lightingSystem, audioSystem, cityTiles, cityLandmarks, weather };
+  globalThis.slop = { scene, navigator: routeNavigator, trafficSystem, controllerManager, cameraSystem, lightingSystem, audioSystem, cityTiles, cityLandmarks, weather };
 
   await precompileShaders();
   markInit('compile');
@@ -781,6 +796,8 @@ async function initApp() {
 
     // Update 3rd-person controllers, camera, signals, traffic & vehicle collisions, building LODs, and dynamic shadow focus
     gamepadControls.update(dt);
+    routeNavigator.update(dt, elapsed); // (the autopilot's inputs, for this frame's car update)
+    navigationUI.update(dt);
     controllerManager.update(dt, elapsed);
     cameraSystem.update(dt, elapsed);
     streetDetails.signalClock.value = elapsed;

@@ -58,6 +58,8 @@
   <link rel="modulepreload" href="./js/audio-tropics.js" />
   <link rel="modulepreload" href="./js/audio-system.js" />
   <link rel="modulepreload" href="./js/weather.js" />
+  <link rel="modulepreload" href="./js/navigation.js" />
+  <link rel="modulepreload" href="./js/navigation-ui.js" />
   <link rel="modulepreload" href="./js/main.js" />
   <script type="module" src="./js/main.js"></script>
   <!-- Inter (UI) & Overpass (street-name signs: modelled on Highway Gothic, the US road sign typeface) -->
@@ -80,6 +82,13 @@
       <symbol id="i-storm" viewBox="0 0 24 24"><path d="M7 16.5H6a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 16.2 7.1 4.2 4.2 0 0 1 17.8 15.4M12.6 11.5l-2.4 4.2h3.2l-2.2 4.3"/></symbol>
       <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.6A7.8 7.8 0 0 1 9.4 4.5a7.8 7.8 0 1 0 10.1 10.1z"/></symbol>
       <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21.2s-6.6-5.7-6.6-11.2a6.6 6.6 0 0 1 13.2 0c0 5.5-6.6 11.2-6.6 11.2z"/><circle cx="12" cy="10" r="2.4"/></symbol>
+      <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M8.2 18H15a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h6.8"/></symbol>
+      <symbol id="i-turn-left" viewBox="0 0 24 24"><path d="M15 21v-8a4 4 0 0 0-4-4H5M9 5 5 9l4 4"/></symbol>
+      <symbol id="i-turn-right" viewBox="0 0 24 24"><path d="M9 21v-8a4 4 0 0 1 4-4h6M15 5l4 4-4 4"/></symbol>
+      <symbol id="i-keep-left" viewBox="0 0 24 24"><path d="M14 21v-6L8 9V4M5 7l3-3 3 3"/></symbol>
+      <symbol id="i-keep-right" viewBox="0 0 24 24"><path d="M10 21v-6l6-6V4M13 7l3-3 3 3"/></symbol>
+      <symbol id="i-uturn" viewBox="0 0 24 24"><path d="M8 21V9a4 4 0 0 1 8 0v6M12.5 12l3.5 3.5 3.5-3.5"/></symbol>
+      <symbol id="i-arrive" viewBox="0 0 24 24"><path d="M6 21V4M6 4h11l-2.5 3.5L17 11H6"/></symbol>
       <symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4.5 3.5 6.6v13l5.5-2.1 6 2.1 5.5-2.1v-13L15 6.6 9 4.5zM9 4.5v13M15 6.6v13"/></symbol>
       <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
       <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3.5 3.5l17 17M10.6 5.6c.5-.1.9-.1 1.4-.1 6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.4 3.2M6.6 6.6A15.6 15.6 0 0 0 2.5 12s3.5 6.5 9.5 6.5c1.6 0 3.1-.4 4.4-1.1M9.9 9.9a2.8 2.8 0 0 0 4.2 4.2"/></symbol>
@@ -149,6 +158,9 @@
       <button id="btn-teleport" class="tool-btn" type="button" popovertarget="teleport-popover" title="Teleport the active player">
         <svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span class="tool-label">Teleport</span><svg class="icon icon-sm" aria-hidden="true"><use href="#i-chevron-down"/></svg>
       </button>
+      <button id="btn-navigate" class="tool-btn" type="button" popovertarget="navigate-popover" title="Drive to a destination [G]">
+        <svg class="icon" aria-hidden="true"><use href="#i-route"/></svg><span class="tool-label">Navigate</span><kbd>G</kbd>
+      </button>
       <button id="btn-open-map" class="tool-btn" type="button" title="Full Singapore street map [M]">
         <svg class="icon" aria-hidden="true"><use href="#i-map"/></svg><span class="tool-label">Map</span><kbd>M</kbd>
       </button>
@@ -166,6 +178,40 @@
   <div id="teleport-popover" class="popover" popover data-side="below" data-anchor="hud-toolbar" aria-label="Teleport the active player">
     <div class="pop-title">Teleport to</div>
     <!-- the city's destinations (city-config.js TELEPORT_LOCATIONS), listed by main.js -->
+  </div>
+
+  <!-- Navigation (js/navigation.js): who drives, where to -->
+  <div id="navigate-popover" class="popover" popover data-side="below" data-anchor="hud-toolbar" aria-label="Drive to a destination">
+    <div class="pop-title">Who drives</div>
+    <div class="nav-drivers" role="radiogroup" aria-label="Who drives">
+      <button class="pop-item nav-driver active" data-driver="you" type="button" role="radio" aria-checked="true"><span class="pop-name">You drive</span><span class="pop-sub">Turn-by-turn directions</span></button>
+      <button class="pop-item nav-driver" data-driver="self" type="button" role="radio" aria-checked="false"><span class="pop-name">Self-driving</span><span class="pop-sub">Keeps its lane, 50 km/h, stops at reds</span></button>
+      <button class="pop-item nav-driver" data-driver="crazy" type="button" role="radio" aria-checked="false"><span class="pop-name">Crazy Taxi</span><span class="pop-sub">On the clock. Lights are suggestions · T: cockpit cam</span></button>
+    </div>
+    <div class="pop-title">Drive to</div>
+    <button id="nav-pick" class="pop-item" type="button"><span class="pop-name">Pick a spot on the map…</span></button>
+    <button id="nav-random" class="pop-item" type="button"><span class="pop-name">Surprise me</span><span class="pop-sub">A random fare across town</span></button>
+    <button id="nav-stop" class="pop-item" type="button" hidden><span class="pop-name">End the trip</span></button>
+    <div id="nav-places"><!-- the city's places, listed by main.js --></div>
+  </div>
+
+  <!-- Turn-by-turn guidance & the Crazy Taxi meter -->
+  <div id="nav-panel" class="hud hud-top-center" hidden>
+    <div class="panel nav-card" aria-live="polite">
+      <svg id="nav-arrow" class="nav-arrow" aria-hidden="true"><use href="#i-turn-left"/></svg>
+      <div class="nav-text">
+        <div class="nav-line"><span id="nav-distance" class="nav-distance">0 m</span><span id="nav-instruction" class="nav-instruction"></span></div>
+        <div class="nav-sub"><span id="nav-driver" class="nav-driver-badge">You drive</span><span id="nav-eta"></span><span id="nav-status" class="nav-status"></span></div>
+      </div>
+      <button id="nav-close" class="icon-btn" type="button" title="End the trip" aria-label="End the trip"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    </div>
+    <div id="nav-fare" class="panel nav-fare" hidden>
+      <div class="fare-cell"><span class="fare-label">Time</span><span id="fare-time" class="fare-value">0</span></div>
+      <div class="fare-cell"><span class="fare-label">Fare</span><span id="fare-total" class="fare-value">$0.00</span></div>
+      <div class="fare-cell"><span class="fare-label">Near misses</span><span id="fare-misses" class="fare-value">0</span></div>
+      <div class="fare-cell"><span class="fare-label">Earned</span><span id="fare-earned" class="fare-value">$0.00</span></div>
+    </div>
+    <div id="nav-toast" class="nav-toast" role="status"></div>
   </div>
 
   <!-- Bottom-Left: Street-Name Signs & Live GPS Radar Minimap -->
@@ -246,12 +292,13 @@
     </div>
   </section>
 
-  <!-- All Cameras: 3 Follow Cameras + 7 Iconic NYC Vantage Cameras (?city=nyc only) + Auto-Director Drone -->
+  <!-- All Cameras: 4 Follow Cameras + 7 Iconic NYC Vantage Cameras (?city=nyc only) + Auto-Director Drone -->
   <div id="camera-popover" class="popover" popover data-side="above" data-anchor="hud-cluster" data-align="hud-cluster" aria-label="Multiple Camera Angles">
     <div class="pop-title">Follow</div>
     <button id="cam-chase" class="pop-item cam-btn active" data-camera="chase" type="button"><span class="pop-name">3rd-Person Chase</span><kbd>5</kbd></button>
     <button id="cam-action" class="pop-item cam-btn" data-camera="action" type="button"><span class="pop-name">Low-Angle Action</span><kbd>6</kbd></button>
     <button id="cam-pov" class="pop-item cam-btn" data-camera="pov" type="button"><span class="pop-name">First-Person / Cockpit</span><kbd>7</kbd></button>
+    <button id="cam-taxi" class="pop-item cam-btn" data-camera="taxi" type="button"><span class="pop-name">Crazy Taxi Cam</span><kbd>T</kbd></button>
     <div class="pop-title">Scenic</div>
     <button id="cam-centralPark" class="pop-item cam-btn" data-camera="centralPark" type="button"><span class="pop-name">Central Park Oasis</span></button>
     <button id="cam-fifthAve" class="pop-item cam-btn" data-camera="fifthAve" type="button"><span class="pop-name">5th Ave &amp; Empire State</span><kbd>8</kbd></button>

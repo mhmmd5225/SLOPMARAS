@@ -6,6 +6,8 @@ A Singapore city simulation built with [three.js](https://threejs.org/), WebGPUR
 
 Singapore's own touches: Marina Bay Sands (three towers on their leaning legs under the SkyPark, its pool and gardens, Spectra's beams at night) and the Singapore Flyer (turning once in 32 minutes, its rim lit at night) modelled low-poly where OpenStreetMap maps them; koels calling, cicadas at dusk and crickets at night; afternoon thunderstorms with rain, lightning and thunder that arrives at the speed of sound (the storm button or `R`, or open the page with `?storm`); and the rest of the island beyond the Central Area — the HDB estates, Jurong, Changi, Sentosa — streamed in tiles of buildings and main roads around you as you fly.
 
+Drive somewhere: Navigate (`G`) plans a route over the same road graph the traffic drives, lane by lane, with turn-by-turn directions on the HUD and the route on the radar and map. Drive it yourself, or hand the taxi over: Self-driving keeps to its lane at 50 km/h, changes lanes past slow traffic, stops at red lights and waits for the car ahead; Crazy Taxi boosts, treats every light as green, swerves into whatever lane is free (oncoming included) and is on the clock, with near misses paid into the fare and the next fare called when you drop off. Touch the controls to take the wheel back. `T` puts you in the cab: the Crazy Taxi Cam rides in the driver's seat, looks into the turns, leans out of them, widens with speed and jolts when you hit something.
+
 Slop Singapore grew out of mrdoob's [Slop New York](https://github.com/mrdoob/slop-newyork), and New York still runs here: open the page with `?city=nyc`.
 
 ## Run it

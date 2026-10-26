@@ -270,6 +270,7 @@ class ThirdPersonControllerManager {
     this._keyboardKeys = {};
     this._touchKeys = {};
     this._gamepadKeys = {};
+    this._autoKeys = {}; // the self-driving taxi's (navigation.js)
 
     const onKey = (e, isDown) => {
       const action = actionsByCode.get(e.code);
@@ -293,9 +294,32 @@ class ThirdPersonControllerManager {
     const keyboard = this._keyboardKeys[action] || false;
     const touch = this._touchKeys[action] || false;
     const gamepad = this._gamepadKeys[action] || false;
-    const strength = Math.max(keyboard, touch, gamepad);
+    const auto = this._autoKeys[action] || false;
+    const strength = Math.max(keyboard, touch, gamepad, auto);
     // Preserve digital button values while allowing either analog source to be strongest.
-    this.keys[action] = keyboard === true || touch === true || gamepad === true ? true : strength || false;
+    this.keys[action] = keyboard === true || touch === true || gamepad === true || auto === true ? true : strength || false;
+  }
+
+  // The autopilot's pedals & steering ({ forward, backward, left, right: 0..1, boost }), or null to let go
+  setAutopilotInput(input) {
+    const next = input || {};
+    for (const action of ['forward', 'backward', 'left', 'right', 'boost']) {
+      const value = next[action];
+      this._autoKeys[action] = typeof value === 'boolean' ? value : Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+      this._blendInput(action);
+    }
+  }
+
+  // How hard the player is pressing the throttle, brake or steering themselves (keyboard, touch or gamepad), 0..1
+  userDriveInput() {
+    let strength = 0;
+    for (const action of ['forward', 'backward', 'left', 'right']) {
+      for (const source of [this._keyboardKeys, this._touchKeys, this._gamepadKeys]) {
+        const value = source[action];
+        strength = Math.max(strength, value === true ? 1 : Number(value) || 0);
+      }
+    }
+    return strength;
   }
 
   _setAnalogInput(source, action, value) {
@@ -328,6 +352,7 @@ class ThirdPersonControllerManager {
     this._keyboardKeys = {};
     this._touchKeys = {};
     this._gamepadKeys = {};
+    this._autoKeys = {};
     for (const action of Object.keys(this.keys)) this.keys[action] = false;
   }
 

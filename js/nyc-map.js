@@ -420,6 +420,22 @@ function drawRoute(ctx, x0, y0, x1, y1, width) {
   ctx.stroke();
 }
 
+// The navigator's route (js/navigation.js): the road it actually takes, [{ x, z }] in world metres
+function drawRoutePath(ctx, pts, toX, toY, width) {
+  if (!pts || pts.length < 2) return;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(toX(pts[0].x), toY(pts[0].z));
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(toX(pts[i].x), toY(pts[i].z));
+  ctx.strokeStyle = MAP.halo;
+  ctx.lineWidth = width + 3;
+  ctx.stroke();
+  ctx.strokeStyle = MAP.route;
+  ctx.lineWidth = width;
+  ctx.stroke();
+}
+
 // Waypoint: a taxi-yellow target
 function drawWaypoint(ctx, x, y, r) {
   ctx.fillStyle = MAP.halo;
@@ -489,6 +505,10 @@ class NYCMapSystem {
     // Default GTA 6-style active GPS waypoint (Times Square / Broadway)
     const ts = NYC_LANDMARKS.find((l) => l.id === 'timessquare') || { x: 0, z: 0 };
     this.waypoint = { x: ts.x, z: ts.z, name: 'Times Square & 42nd St' };
+    // Set by main.js while navigating: the route to draw instead of the straight GPS line, and a handler that takes the
+    // next click on the full map as the destination instead of a teleport
+    this.routeLine = null;
+    this.pickHandler = null;
 
     // Street names measured before the web font arrived would be spaced for the fallback font: measure & draw again
     if (document.fonts) {
@@ -600,7 +620,7 @@ class NYCMapSystem {
           const wPos = this.screenToWorld(mx, my, rect.width, rect.height);
           this.hoverWorld = wPos;
           if (this.elHoverInfo) {
-            this.elHoverInfo.textContent = `${getLocationLabel(wPos.x, wPos.z)} · Click to teleport here`;
+            this.elHoverInfo.textContent = `${getLocationLabel(wPos.x, wPos.z)} · ${this.pickHandler ? 'Click to drive here' : 'Click to teleport here'}`;
           }
         }
       });
@@ -615,6 +635,13 @@ class NYCMapSystem {
           const my = e.clientY - rect.top;
           if (mx >= 0 && mx <= rect.width && my >= 0 && my <= rect.height) {
             const wPos = this.clampToManhattan(this.screenToWorld(mx, my, rect.width, rect.height));
+            if (this.pickHandler) {
+              const pick = this.pickHandler;
+              this.pickHandler = null;
+              pick(wPos.x, wPos.z, getLocationLabel(wPos.x, wPos.z));
+              this.renderFullMap();
+              return;
+            }
             this.waypoint = {
               x: wPos.x,
               z: wPos.z,
@@ -702,7 +729,11 @@ class NYCMapSystem {
 
   toggleFullMap(open) {
     this.isFullMapOpen = Boolean(open);
-    if (!this.isFullMapOpen) this.cancelPan();
+    if (!this.isFullMapOpen) {
+      this.cancelPan();
+      this.pickHandler = null; // a destination pick ends with the map
+      document.body?.classList.remove('nav-picking');
+    }
     if (this.onToggle) this.onToggle(this.isFullMapOpen);
     if (!this.modal) return;
     this.modal.classList.toggle('hidden', !this.isFullMapOpen);
@@ -1053,7 +1084,8 @@ class NYCMapSystem {
     if (this.waypoint) {
       const wx = toX(this.waypoint.x);
       const wy = toY(this.waypoint.z);
-      drawRoute(ctx, 0, 0, wx, wy, 3);
+      if (this.routeLine) drawRoutePath(ctx, this.routeLine, toX, toY, 3);
+      else drawRoute(ctx, 0, 0, wx, wy, 3);
       drawWaypoint(ctx, wx, wy, 4.5);
     }
 
@@ -1143,7 +1175,8 @@ class NYCMapSystem {
     if (this.waypoint) {
       const wx = toX(this.waypoint.x);
       const wy = toY(this.waypoint.z);
-      drawRoute(ctx, toX(ent.position.x), toY(ent.position.z), wx, wy, 4);
+      if (this.routeLine) drawRoutePath(ctx, this.routeLine, toX, toY, 4);
+      else drawRoute(ctx, toX(ent.position.x), toY(ent.position.z), wx, wy, 4);
       drawWaypoint(ctx, wx, wy, 7);
     }
 

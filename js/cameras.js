@@ -9,6 +9,7 @@ const CAMERA_PRESETS = [
   { id: 'chase',       name: '3rd-Person Chase',         short: 'Chase',       category: 'follow', fov: 56 },
   { id: 'action',      name: 'Low-Angle Action',         short: 'Action',      category: 'follow', fov: 60 },
   { id: 'pov',         name: 'First-Person / Cockpit',   short: 'POV / Dash',  category: 'follow', fov: 68 },
+  { id: 'taxi',        name: 'Crazy Taxi Cam',           short: 'Taxi Cam',    category: 'follow', fov: 72 },
   { id: 'centralPark', name: 'Central Park Oasis',       short: 'Central Pk',  category: 'scenic', fov: 52 },
   { id: 'fifthAve',    name: '5th Ave & Empire State',   short: '5th Ave',     category: 'scenic', fov: 48 },
   { id: 'timesSquare', name: 'Times Square Crossroads',  short: 'Times Sq',    category: 'scenic', fov: 58 },
@@ -50,6 +51,11 @@ class CameraSystem {
     this.smoothedSpeed = 0;
     this._desiredPos = new THREE.Vector3();
     this._desiredLook = new THREE.Vector3();
+
+    // The Crazy Taxi cockpit (taxi preset): the driver's side of the cab (+1 right, -1 left: a city driving on the
+    // left drives from the right), and the motion it feels — heading rate, speed change, a jolt on impact
+    this.driverSide = 1;
+    this.taxi = { heading: null, yawRate: 0, speed: 0, accel: 0, jolt: 0, roll: 0, look: 0, pitch: 0, fov: 72, time: 0 };
 
     this.bindPointerControls();
   }
@@ -121,6 +127,7 @@ class CameraSystem {
     if (!preset) return;
     this.activePresetId = preset.id;
     this.camera.fov = preset.fov;
+    if (preset.id === 'taxi') this.taxi.heading = null;
     this.camera.updateProjectionMatrix();
     if (snapImmediately) {
       this.initialized = false;
@@ -129,7 +136,7 @@ class CameraSystem {
 
   applyGamepadInput(lookX, lookY, zoom, dt) {
     if (!(dt > 0) || !Number.isFinite(dt)) return;
-    if (this.activePresetId !== 'chase' && this.activePresetId !== 'pov') return;
+    if (this.activePresetId !== 'chase' && this.activePresetId !== 'pov' && this.activePresetId !== 'taxi') return;
     // POV uses the orbit angles, but only chase renders a zoomed camera distance.
     if (this.activePresetId !== 'chase') zoom = 0;
     if (!lookX && !lookY && !zoom) return;
@@ -156,6 +163,7 @@ class CameraSystem {
     this.followOffset.set(0, 0, 0);
     this.followLookOffset.set(0, 0, 0);
     this.followBaseY = 0;
+    this.taxi.heading = null;
     this.setCameraPreset('chase', true);
   }
 
@@ -255,6 +263,70 @@ class CameraSystem {
         break;
       }
 
+      case 'taxi': {
+        // From the driver's seat, behind the wheel, feeling the drive: the view swings into a turn ahead of the cab, the
+        // horizon leans and the head is thrown back on the throttle and forward on the brakes, the lens widens with
+        // speed, and the road buzzes under it and a hit jolts it
+        const t = this.taxi;
+        const car = entity.type === 'car';
+        if (t.heading === null || !(dt > 0)) {
+          t.heading = entity.heading;
+          t.speed = entity.speed;
+          t.yawRate = t.accel = t.jolt = t.roll = t.look = t.pitch = 0;
+        }
+        const k = 1 - Math.exp(-dt * 6);
+        const yawRate = dt > 0 ? Math.atan2(Math.sin(entity.heading - t.heading), Math.cos(entity.heading - t.heading)) / dt : 0;
+        const accel = dt > 0 ? (entity.speed - t.speed) / dt : 0;
+        t.heading = entity.heading;
+        // a sudden loss of speed no brake gives (> 12 m/s²): a crash
+        if (accel < -12 && Math.abs(t.speed) > 4) t.jolt = Math.min(1, t.jolt + Math.min(1, -accel / 60));
+        t.speed = entity.speed;
+        t.yawRate += (yawRate - t.yawRate) * k;
+        t.accel += (Math.max(-12, Math.min(12, accel)) - t.accel) * (1 - Math.exp(-dt * 4));
+        t.jolt *= Math.exp(-dt * 5);
+        t.time += dt;
+        const v = Math.abs(entity.speed);
+        // look into the turn, lean out of it, nod with the pedals
+        t.look += (Math.max(-0.45, Math.min(0.45, t.yawRate * 0.32)) - t.look) * k;
+        t.roll += (Math.max(-0.14, Math.min(0.14, -t.yawRate * v * 0.006)) - t.roll) * k;
+        t.pitch += (Math.max(-0.06, Math.min(0.06, t.accel * 0.006)) - t.pitch) * k;
+        // wider at speed (and more so on boost) for the rush
+        const boost = this.controllerManager.keys?.boost && v > 5 ? 8 : 0;
+        const fovTarget = 72 + Math.min(1, v / 34) * 20 + boost;
+        t.fov += (fovTarget - t.fov) * (1 - Math.exp(-dt * 3));
+        if (Math.abs(this.camera.fov - t.fov) > 0.05) {
+          this.camera.fov = t.fov;
+          this.camera.updateProjectionMatrix();
+        }
+
+        const side = car ? 0.36 * this.driverSide : 0;
+        const fwd = car ? 0.05 : 0.35;
+        const eyeY = car ? 1.32 : 1.6;
+        const fx = Math.sin(entity.heading);
+        const fz = Math.cos(entity.heading);
+        // right of the heading: (-cos h, sin h)
+        const rx = -fz;
+        const rz = fx;
+        // road buzz with speed, the jolt on top
+        const buzz = Math.min(1, v / 30) * 0.012 + t.jolt * 0.09;
+        const nx = (Math.sin(t.time * 37.1) + Math.sin(t.time * 23.7 + 1.3)) * 0.5 * buzz;
+        const ny = (Math.sin(t.time * 41.3 + 0.7) + Math.sin(t.time * 29.9 + 2.1)) * 0.5 * buzz;
+        // thrown back on the throttle, forward on the brakes
+        const surge = -t.accel * 0.012;
+        desiredPos.set(
+          entity.position.x + fx * (fwd + surge) + rx * side + rx * nx,
+          entity.position.y + eyeY + ny,
+          entity.position.z + fz * (fwd + surge) + rz * side + rz * nx
+        );
+        const yaw = totalYaw + t.look;
+        desiredLook.set(
+          desiredPos.x + Math.sin(yaw) * 40.0,
+          desiredPos.y - 0.6 + Math.sin(-this.orbitPitchOffset + 0.09 + t.pitch) * 40.0,
+          desiredPos.z + Math.cos(yaw) * 40.0
+        );
+        break;
+      }
+
       case 'centralPark': {
         // Inside Central Park South looking across The Pond, Gapstow Bridge, The Mall, Sheep Meadow & UWS/UES Skylines
         const sway = Math.sin(elapsed * 0.22) * 3.5;
@@ -327,7 +399,7 @@ class CameraSystem {
       }
     }
 
-    if (!this.initialized || this.activePresetId === 'pov') {
+    if (!this.initialized || this.activePresetId === 'pov' || this.activePresetId === 'taxi') {
       this.currentPos.copy(desiredPos);
       this.currentLookAt.copy(desiredLook);
       this.initialized = true;
@@ -361,6 +433,8 @@ class CameraSystem {
 
     this.camera.position.copy(this.currentPos);
     this.camera.lookAt(this.currentLookAt);
+    // the cockpit's lean (rolled about the view axis)
+    if (this.activePresetId === 'taxi' && this.taxi.roll && this.camera.rotateZ) this.camera.rotateZ(this.taxi.roll);
   }
 }
 

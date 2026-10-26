@@ -1256,6 +1256,132 @@ body.is-boosting #hud-speed-meter {
 }
 
 /* ------------------------------------------------------------------------------------------------------------------
+   Top centre: turn-by-turn navigation (js/navigation.js) & the Crazy Taxi meter
+   ------------------------------------------------------------------------------------------------------------------ */
+.hud-top-center {
+  top: var(--edge);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-top-center[hidden] { display: none; }
+body.hud-minimized .hud-top-center { transform: translate(-50%, -10px); }
+
+.nav-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 300px;
+  max-width: min(480px, calc(100vw - 2 * var(--edge)));
+  padding: 10px 10px 10px 12px;
+  border-radius: var(--r-panel);
+  background: var(--grain), var(--sign-green);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: var(--shadow);
+}
+
+.nav-arrow {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nav-text { flex: 1; min-width: 0; }
+
+.nav-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--font-sign);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.nav-distance { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.nav-instruction { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+
+.nav-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.nav-driver-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 650;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+body[data-driver='self'] .nav-driver-badge { background: #2f7cf6; color: #fff; }
+body[data-driver='crazy'] .nav-driver-badge { background: var(--taxi); color: var(--taxi-ink); }
+.nav-status { color: var(--warn); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+
+.nav-card .icon-btn { flex: none; color: #fff; }
+
+.nav-fare {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 4px 18px;
+  padding: 8px 16px;
+  border-radius: var(--r-panel);
+  background: var(--grain), var(--taxi);
+  color: var(--taxi-ink);
+  box-shadow: var(--shadow);
+}
+
+.nav-fare[hidden] { display: none; }
+.fare-cell { display: flex; flex-direction: column; align-items: center; }
+.fare-label { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; }
+.fare-value { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.nav-fare.is-late #fare-time { color: #b3261e; }
+
+.nav-toast {
+  min-height: 1px;
+  font-size: 22px;
+  font-weight: 800;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  color: var(--taxi);
+  text-shadow: 0 2px 0 #000, 0 0 18px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 0.2s ease, transform 0.3s var(--ease-out);
+  pointer-events: none;
+}
+
+.nav-toast.show { opacity: 1; transform: scale(1); }
+
+.nav-drivers { display: flex; flex-direction: column; }
+.nav-driver, #navigate-popover .pop-item:has(.pop-sub) { flex-direction: column; align-items: flex-start; gap: 1px; }
+.nav-driver.active .pop-sub { color: rgba(0, 0, 0, 0.55); }
+#nav-places { max-height: 40vh; overflow-y: auto; }
+
+body.nav-picking #fullmap-canvas { cursor: crosshair; }
+
+@media (max-width: 820px) {
+  .hud-top-center { top: calc(max(var(--edge), env(safe-area-inset-top)) + 116px); }
+  .nav-card { min-width: 0; }
+  .nav-distance { font-size: 18px; }
+  .nav-fare { gap: 2px 10px; padding: 6px 10px; }
+  .fare-value { font-size: 16px; }
+}
+
+/* ------------------------------------------------------------------------------------------------------------------
    Responsive
    ------------------------------------------------------------------------------------------------------------------ */
 @media (max-width: 1800px) {

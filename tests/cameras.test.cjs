@@ -240,3 +240,42 @@ test('teleport releases every camera pointer and ignores old gestures before acc
   close(h.camera.orbitYawOffset, -0.065);
   assert.equal(h.camera.isDragging, true);
 });
+
+test('the Crazy Taxi cockpit sits on the driver\'s side, widens with speed, leans out of turns and jolts on a crash', () => {
+  const h = cameraHarness();
+  const { camera: sys, entity } = h;
+  let rolled = 0;
+  sys.camera.rotateZ = (a) => { rolled = a; };
+  sys.driverSide = 1; // driving on the left: the wheel on the right
+  sys.setCameraPreset('taxi', true);
+  const dt = 1 / 60;
+  sys.update(dt, 0);
+  // heading 0 faces +z, so the right is -x
+  assert.ok(sys.camera.position.x < -0.3 && sys.camera.position.x > -0.45, `on the right (${sys.camera.position.x})`);
+  assert.ok(Math.abs(sys.camera.position.y - 1.32) < 0.02, 'at seated eye height');
+  const fov0 = sys.camera.fov;
+
+  // at speed: wider, and leaning out of a left turn (heading rising)
+  entity.speed = 30;
+  for (let i = 0; i < 180; i++) {
+    entity.heading += 0.4 * dt;
+    entity.position.z += Math.cos(entity.heading) * entity.speed * dt;
+    entity.position.x += Math.sin(entity.heading) * entity.speed * dt;
+    sys.update(dt, i * dt);
+  }
+  assert.ok(sys.camera.fov > fov0 + 12, `wider at speed (${sys.camera.fov.toFixed(1)}°)`);
+  assert.ok(rolled < -0.04, `leans out of the turn (${rolled.toFixed(3)})`);
+  const lookYaw = Math.atan2(sys.camera.target.x - sys.camera.position.x, sys.camera.target.z - sys.camera.position.z);
+  assert.ok(lookYaw > entity.heading + 0.05, 'looks into the turn ahead of the cab');
+
+  // a crash: 30 m/s to 5 in a frame
+  entity.speed = 5;
+  sys.update(dt, 4);
+  assert.ok(sys.taxi.jolt > 0.3, `jolted (${sys.taxi.jolt.toFixed(2)})`);
+  for (let i = 0; i < 120; i++) sys.update(dt, 4 + i * dt);
+  assert.ok(sys.taxi.jolt < 0.01, 'and settles');
+
+  // the other presets get their own field of view back
+  sys.setCameraPreset('chase', true);
+  assert.equal(sys.camera.fov, 56);
+});

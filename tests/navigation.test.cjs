@@ -1,0 +1,316 @@
+const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+const test = require('node:test');
+const vm = require('node:vm');
+const { loadModule } = require('./helpers/module.cjs');
+
+// The navigator against a synthetic street grid, with the road network's own lane-to-lane curves and the player car's
+// own speed model (both lifted from the production sources), so the autopilot is tested on the physics it drives.
+const roadSource = readFileSync(join(__dirname, '../js/road-network.js'), 'utf8');
+const carSource = readFileSync(join(__dirname, '../js/controllers.js'), 'utf8');
+const pick = (src, re, what) => {
+  const m = src.match(re);
+  assert.ok(m, `${what} is present`);
+  return m[0];
+};
+const { makeCurve, curvePoint, driveSpeed, CAR_DRIVE } = vm.runInNewContext(`
+  ${pick(roadSource, /function makeCurve\(e, i, f, j\) \{[\s\S]*?\n\}/, 'makeCurve')}
+  ${pick(roadSource, /function curvePoint\(c, s, out\) \{[\s\S]*?\n\}/, 'curvePoint')}
+  ${pick(carSource, /const CAR_DRIVE = \{[\s\S]*?\n\};/, 'CAR_DRIVE')}
+  ${pick(carSource, /function driveSpeed\(speed, throttle, boost, dt, drive\) \{[\s\S]*?\n\}/, 'driveSpeed')}
+  ({ makeCurve, curvePoint, driveSpeed, CAR_DRIVE });
+`, { Math, Float32Array });
+
+let phase = 'green';
+const nav = loadModule(readFileSync(join(__dirname, '../js/navigation.js'), 'utf8'), {
+  imports: {
+    './city-config.js': {
+      signalPhase: () => phase,
+      nearestRoads: () => []
+    }
+  },
+  globals: { Math, Number, Map, Set, WeakMap, Array, Infinity, Object },
+  filename: 'navigation.js'
+});
+
+// A grid of two-way streets `n` x `n` blocks of `block` metres, two lanes each way, keeping left as in Singapore.
+// Every corner is signalised; streets running north-south are group 0.
+function grid(n = 4, block = 100) {
+  const nodes = [];
+  const at = (i, j) => nodes[i * (n + 1) + j];
+  for (let i = 0; i <= n; i++) for (let j = 0; j <= n; j++) nodes.push({ x: i * block, z: j * block, signal: true, i, j });
+  const edges = [];
+  const box = 9; // half the intersection box
+  const link = (a, b) => {
+    const span = Math.hypot(b.x - a.x, b.z - a.z);
+    const dx = (b.x - a.x) / span;
+    const dz = (b.z - a.z) / span;
+    edges.push({
+      from: a, to: b, dx, dz, rx: -dz, rz: dx,
+      sx: a.x + dx * box, sz: a.z + dz * box, len: span - 2 * box,
+      lanes: [-5.4, -1.8], // left of the centreline: keep left
+      axisIndex: Math.abs(dz) > 0.5 ? 0 : 1, moves: []
+    });
+  };
+  for (let i = 0; i <= n; i++) {
+    for (let j = 0; j <= n; j++) {
+      if (i < n) { link(at(i, j), at(i + 1, j)); link(at(i + 1, j), at(i, j)); }
+      if (j < n) { link(at(i, j), at(i, j + 1)); link(at(i, j + 1), at(i, j)); }
+    }
+  }
+  edges.forEach((e, id) => (e.id = id));
+  for (const e of edges) {
+    for (const f of edges) {
+      if (f.from !== e.to) continue;
+      const uturn = f.to === e.from;
+      const cross = e.dx * f.dz - e.dz * f.dx;
+      const turn = uturn ? 'R' : cross < -0.5 ? 'L' : cross > 0.5 ? 'R' : 'S';
+      // straight on from either lane, left turns from the left lane, right turns & U-turns from the right one
+      const out = turn === 'S' ? [0, 1] : turn === 'L' ? [0, -1] : [-1, 1];
+      e.moves.push({ to: f, turn, cross, uturn, out });
+    }
+  }
+  const curves = new Map();
+  return {
+    nodes, edges, keepLeft: true,
+    connector(e, i, f, j) {
+      const k = `${e.id}:${i}:${f.id}:${j}`;
+      if (!curves.has(k)) curves.set(k, makeCurve(e, i, f, j));
+      return curves.get(k);
+    },
+    curvePoint,
+    isRoadClear: () => true
+  };
+}
+
+// The player's car as controllers.js moves it (speed model, steering lag, heading rate), on a frictionless world
+function makeCar(x, z, heading) {
+  return { position: { x, y: 0, z }, heading, speed: 0, steerAngle: 0, type: 'car' };
+}
+function stepCar(c, keys, dt) {
+  let throttle = 0;
+  if (keys.forward) throttle = keys.forward;
+  else if (keys.backward) throttle = -keys.backward;
+  c.speed = driveSpeed(c.speed, throttle, keys.boost, dt, CAR_DRIVE);
+  let steer = 0;
+  if (keys.left) steer = keys.left;
+  if (keys.right) steer = -keys.right;
+  c.steerAngle += (steer * 0.52 - c.steerAngle) * Math.min(1, dt * 10);
+  if (Math.abs(c.speed) > 0.2) c.heading += c.steerAngle * 2.4 * Math.min(1, Math.abs(c.speed) / 8) * Math.sign(c.speed) * dt;
+  c.position.x += Math.sin(c.heading) * c.speed * dt;
+  c.position.z += Math.cos(c.heading) * c.speed * dt;
+}
+
+function rig(network, car, traffic = { cars: [], buses: [], peds: [] }) {
+  const keys = {};
+  const controllers = {
+    activeMode: 'car',
+    getActiveEntity: () => car,
+    setAutopilotInput: (input) => {
+      for (const k of ['forward', 'backward', 'left', 'right', 'boost']) keys[k] = input ? input[k] : 0;
+    },
+    userDriveInput: () => 0
+  };
+  const events = [];
+  const navigator = new nav.Navigator({ network, trafficSystem: traffic, controllerManager: controllers, onEvent: (kind, d) => events.push([kind, d]) });
+  return { navigator, keys, events };
+}
+
+function run({ navigator, keys }, car, seconds, dt = 1 / 60, each = null) {
+  let t = 0;
+  let maxOff = 0;
+  while (t < seconds && !navigator.arrived) {
+    navigator.update(dt, t);
+    stepCar(car, keys, dt);
+    if (navigator.path) {
+      const loc = nav.locate(navigator.path, car.position.x, car.position.z, navigator.index, 40);
+      maxOff = Math.max(maxOff, loc.dist);
+    }
+    if (each) each(t);
+    t += dt;
+  }
+  return { t, maxOff };
+}
+
+test('routes take the moves between edges and end at the destination', () => {
+  const net = grid();
+  // heading +z (south) on the grid's west street, in its inner southbound lane (keeping left: +x of the centreline)
+  const route = nav.planRoute(net, { x: 1.8, z: 50, heading: 0 }, { x: 300, z: 300 });
+  assert.ok(route, 'a route is found');
+  for (let k = 0; k < route.moves.length; k++) assert.equal(route.moves[k].to, route.edges[k + 1]);
+  const last = route.edges[route.edges.length - 1];
+  const end = { x: last.sx + last.dx * route.s1, z: last.sz + last.dz * route.s1 };
+  assert.ok(Math.hypot(end.x - 300, end.z - 300) < 12, `ends at the destination (${end.x.toFixed(1)}, ${end.z.toFixed(1)})`);
+  // the length is about the Manhattan distance
+  assert.ok(route.length > 500 && route.length < 700, `length ${route.length}`);
+});
+
+test('a destination behind the car on its own street is reached by going round the block', () => {
+  const net = grid();
+  const route = nav.planRoute(net, { x: 1.8, z: 70, heading: 0 }, { x: 1.8, z: 30 });
+  assert.ok(route);
+  assert.ok(route.edges.length > 1, 'drives round rather than reversing');
+  // (by a U-turn at the next corner onto the other side of the street, or round the block)
+  const last = route.edges[route.edges.length - 1];
+  const end = { x: last.sx + last.dx * route.s1, z: last.sz + last.dz * route.s1 };
+  assert.ok(Math.hypot(end.x - 1.8, end.z - 30) < 8, 'ends at the destination');
+});
+
+test('the path keeps to its lanes, changes lane before a turn and slows for the corner', () => {
+  const net = grid();
+  const route = nav.planRoute(net, { x: 1.8, z: 20, heading: 0 }, { x: 200, z: 100 });
+  const path = nav.buildPath(net, route, 1.8, 20);
+  assert.ok(path.pts.length > 20);
+  // (after the lead-in from where the car stands onto its lane)
+  for (let i = 2; i < path.pts.length; i++) {
+    const gap = path.pts[i].s - path.pts[i - 1].s;
+    assert.ok(gap > 0.3 && gap < 5, `point spacing ${gap}`);
+  }
+  // speed: zero at the end, never above cruise, slower in the corner than on the straight
+  assert.equal(path.pts[path.pts.length - 1].v, 0);
+  assert.ok(Math.max(...path.pts.map((p) => p.v)) <= nav.DRIVERS.self.cruise + 1e-9);
+  const turn = path.maneuvers.find((m) => m.turn !== 'S');
+  assert.ok(turn, 'there is a turn');
+  const cornerV = Math.min(...path.pts.filter((p) => Math.abs(p.s - turn.s - 6) < 6).map((p) => p.v));
+  assert.ok(cornerV < 9, `corner speed ${cornerV}`);
+  // turning left (east from southbound, keeping left) is taken from the left lane
+  assert.equal(turn.turn, 'L');
+  const before = path.pts[turn.i];
+  const e = turn.from;
+  const across = (before.x - e.sx) * e.rx + (before.z - e.sz) * e.rz;
+  assert.ok(Math.abs(across - e.lanes[0]) < 0.2, `in the left lane at the turn (${across})`);
+});
+
+test('pure pursuit steers toward the target with the right sign', () => {
+  // heading 0 faces +z; a target ahead and to +x needs the heading to grow toward pi/2: steering left (+)
+  assert.ok(nav.pursuitSteer(0, 0, 0, 10, 5, 20) > 0);
+  assert.ok(nav.pursuitSteer(0, 0, 0, 10, -5, 20) < 0);
+  assert.equal(Math.round(nav.pursuitSteer(0, 0, 0, 10, 0, 20) * 1e6), 0);
+});
+
+test('self-driving drives the car to the destination on its lanes and stops there', () => {
+  phase = 'green';
+  const net = grid();
+  const car = makeCar(1.8, 20, 0);
+  const r = rig(net, car);
+  r.navigator.setDriver('self');
+  assert.ok(r.navigator.setDestination(300, 200, 'Test'));
+  const { t, maxOff } = run(r, car, 180);
+  assert.ok(r.navigator.arrived, `arrived (t ${t.toFixed(1)}s, ${r.navigator.progress.toFixed(0)} / ${r.navigator.path.length.toFixed(0)} m)`);
+  assert.ok(maxOff < 2.2, `kept within ${maxOff.toFixed(2)} m of its path`);
+  assert.ok(Math.hypot(car.position.x - 300, car.position.z - 200) < 14);
+  assert.ok(Math.abs(car.speed) < 1.5);
+  assert.ok(r.events.some(([k]) => k === 'arrived'));
+});
+
+test('self-driving stops at a red light and goes on green', () => {
+  const net = grid();
+  const car = makeCar(1.8, 20, 0);
+  const r = rig(net, car);
+  r.navigator.setDriver('self');
+  r.navigator.setDestination(1.8, 260, 'South');
+  phase = 'red';
+  run(r, car, 25);
+  const stop = r.navigator.path.stops[0];
+  assert.ok(stop, 'there is a signal on the way');
+  assert.ok(Math.abs(car.speed) < 0.3, `stopped (${car.speed.toFixed(2)} m/s)`);
+  const gap = stop.s - r.navigator.progress;
+  assert.ok(gap > 0 && gap < 9, `at the stop line (${gap.toFixed(1)} m short)`);
+  phase = 'green';
+  run(r, car, 6);
+  assert.ok(car.speed > 3, 'pulls away on green');
+});
+
+function chase(driver, slowCars, seconds = 16) {
+  const net = grid();
+  const car = makeCar(1.8, 20, 0);
+  const r = rig(net, car, { cars: slowCars, buses: [], peds: [] });
+  r.navigator.setDriver(driver);
+  r.navigator.setDestination(1.8, 380, 'South');
+  let minGap = Infinity;
+  let passed = false;
+  let minX = Infinity;
+  run(r, car, seconds, 1 / 60, (t) => {
+    for (const v of slowCars) v.z += v.speed / 60;
+    const lead = slowCars[0];
+    for (const v of slowCars) {
+      const along = v.z - car.position.z;
+      if (Math.abs(v.x - car.position.x) < 1.8) minGap = Math.min(minGap, Math.abs(along) - 4.6);
+    }
+    if (lead.z - car.position.z < -6) passed = true;
+    if (car.position.z > 25) minX = Math.min(minX, car.position.x);
+  });
+  return { car, passed, minGap, minX };
+}
+const slowCar = (x, z, speed = 3) => ({ edge: {}, x, z, speed, tx: 0, tz: 1, half: 2.3, halfWidth: 0.9 });
+
+test('self-driving overtakes slow traffic in its own direction\'s other lane, Crazy Taxi anywhere through a red', () => {
+  phase = 'green';
+  const self = chase('self', [slowCar(1.8, 60)]);
+  assert.ok(self.passed, 'self-driving gets past in the other lane');
+  assert.ok(self.minGap > 0.5, `without coming close (${self.minGap.toFixed(2)} m)`);
+  assert.ok(self.minX > 0.3, `never crossing into the oncoming lanes (x ${self.minX.toFixed(2)})`);
+  phase = 'red';
+  const crazy = chase('crazy', [slowCar(1.8, 60)]);
+  assert.ok(crazy.passed, 'Crazy Taxi gets past');
+  assert.ok(crazy.minGap > 0, `without hitting it (${crazy.minGap.toFixed(2)} m)`);
+  phase = 'green';
+});
+
+test('self-driving stays behind when both of its lanes are blocked', () => {
+  phase = 'green';
+  const r = chase('self', [slowCar(1.8, 60), slowCar(5.4, 60)]);
+  assert.ok(!r.passed, 'stays behind');
+  assert.ok(r.minGap > 0.5, `keeps its distance (${r.minGap.toFixed(2)} m)`);
+  assert.ok(Math.abs(r.car.speed - 3) < 1.5, `matches the speed (${r.car.speed.toFixed(1)})`);
+});
+
+test('touching the controls hands the car back', () => {
+  const net = grid();
+  const car = makeCar(1.8, 20, 0);
+  const r = rig(net, car);
+  let user = 0;
+  r.navigator.controllers.userDriveInput = () => user;
+  r.navigator.setDriver('self');
+  r.navigator.setDestination(300, 300, 'Far');
+  run(r, car, 2);
+  user = 1;
+  r.navigator.update(1 / 60, 2);
+  assert.equal(r.navigator.driver.id, 'you');
+  assert.ok(r.events.some(([k]) => k === 'takeover'));
+  assert.ok(!r.keys.forward && !r.keys.left && !r.keys.right, 'autopilot input released');
+});
+
+test('Crazy Taxi gets there much faster than the self-driving taxi, through the reds, and is paid for it', () => {
+  const times = {};
+  for (const driver of ['self', 'crazy']) {
+    phase = 'green';
+    const net = grid(6, 120);
+    const car = makeCar(1.8, 20, 0);
+    const r = rig(net, car);
+    r.navigator.setDriver(driver);
+    r.navigator.setDestination(600, 600, 'Far');
+    let top = 0;
+    const { t, maxOff } = run(r, car, 240, 1 / 60, () => { top = Math.max(top, car.speed); });
+    assert.ok(r.navigator.arrived, `${driver} arrived`);
+    assert.ok(maxOff < 4, `${driver} stayed near its path (${maxOff.toFixed(2)} m)`);
+    times[driver] = { t, top };
+    if (driver === 'crazy') {
+      const done = r.events.find(([k]) => k === 'arrived')[1];
+      assert.ok(done.fare && done.fare.total > done.fare.base, `fare ${done.fare && done.fare.total}`);
+    }
+  }
+  assert.ok(times.crazy.top > 25, `Crazy Taxi boosts (${times.crazy.top.toFixed(1)} m/s)`);
+  assert.ok(times.self.top < 14.5, `self-driving keeps to 50 km/h (${times.self.top.toFixed(1)} m/s)`);
+  assert.ok(times.crazy.t < times.self.t * 0.7, `faster: ${times.crazy.t.toFixed(0)} s vs ${times.self.t.toFixed(0)} s`);
+});
+
+test('self-driving goes round stalled cars through the clear oncoming lane after waiting a while', () => {
+  phase = 'green';
+  const r = chase('self', [slowCar(1.8, 60, 0), slowCar(5.4, 60, 0)], 30);
+  // (up to the cars, ~8 s waiting, then round them)
+  assert.ok(r.passed, 'gets past');
+  assert.ok(r.minGap > 0.3, `without touching them (${r.minGap.toFixed(2)} m)`);
+  assert.ok(r.minX < 0, 'using the oncoming lane');
+});
