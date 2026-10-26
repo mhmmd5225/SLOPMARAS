@@ -1,4 +1,5 @@
 import { signalPhase, nearestRoads } from './city-config.js';
+import { Tracker, firstConflict } from './perception.js';
 
 // js/navigation.js
 // Drive to a destination over the road graph traffic.js drives on (road-network.js): A* over its directed edges and
@@ -40,14 +41,22 @@ const DRIVERS = {
     aLat: 2.0, brake: 2.6, hardBrake: 7, gap0: 4.0, gapTime: 1.3, margin: 0.45,
     signals: true, peds: true,
     // steering (drive(), step 3): tuned against controllers.js updateCar in tests/navigation.test.cjs
-    steerLag: 0.1, steerPreview: 1.4, steerHeading: 1.4, steerCross: 1.6, curveWindow: [0], turnPenalty: 8, signalPenalty: 12
+    steerLag: 0.1, steerPreview: 1.4, steerHeading: 1.4, steerCross: 1.6, curveWindow: [0], turnPenalty: 8, signalPenalty: 12,
+    // seeing the traffic coming (avoid()): how far ahead it looks (s), the room it keeps (m, growing with how far ahead
+    // it is guessing), how hard it will brake before it would rather swerve, how hard it swerves (m/s² across), and
+    // whether it may leave its own side of the road to get out of the way
+    laneAcc: 0.9, // m/s² across in an ordinary lane change
+    safety: { horizon: 4, clearance: 0.7, growth: 0.2, pedClearance: 1.0, comfort: 4.5, maxBrake: 9, latAcc: 3.5, nudges: [0.8, 1.5], ownSide: true, lateralCost: 6 }
   },
   crazy: {
     id: 'crazy', label: 'Crazy Taxi', auto: true, offRoute: 20,
     cruise: 34,
     aLat: 8.0, brake: 7.0, hardBrake: 9, gap0: 1.2, gapTime: 0.25, margin: 0.15,
     signals: false, peds: false,
-    steerLag: 0.1, steerPreview: 2.5, steerHeading: 1.4, steerCross: 0.8, curveWindow: [0], turnPenalty: 14, signalPenalty: 0
+    steerLag: 0.1, steerPreview: 2.5, steerHeading: 1.4, steerCross: 0.8, curveWindow: [0], turnPenalty: 14, signalPenalty: 0,
+    // a rule breaker: less look-ahead, a hand's breadth of room, swerving hard before braking, anywhere on the road
+    laneAcc: 3.5,
+    safety: { horizon: 3, clearance: 0.15, growth: 0.15, pedClearance: 0.4, comfort: 2.5, maxBrake: 9, latAcc: 6, nudges: [1.5, 3.4, 6.8], ownSide: false, lateralCost: 0.4 }
   }
 };
 
@@ -457,11 +466,13 @@ const COAST = 0.78;
  * second, no harder than `maxBrake`, turned into pedal by what the car's engine and brakes give at this speed. Feeding
  * the acceleration forward (rather than pedal in proportion to the speed error) brakes smoothly instead of in jabs.
  */
-function speedControl(speed, target, maxBrake = 3, stopAccel = 0) {
+function speedControl(speed, target, maxBrake = 3, stopAccel = 0, aCap = Infinity) {
   const v = Math.max(0, speed);
   let a = clamp((target - v) * 2, -maxBrake, ACCEL);
+  // (no more than what keeps it clear of the traffic it sees coming)
+  if (aCap < a) a = Math.max(aCap, -FULL_BRAKE);
   // stopping at a line: the steady deceleration that stops it there (give or take), not chasing the profile's tail
-  if (stopAccel < 0 && a < 0) a = clamp(a, Math.max(-maxBrake, stopAccel * 1.15), stopAccel * 0.9);
+  if (stopAccel < 0 && a < 0 && aCap === Infinity) a = clamp(a, Math.max(-maxBrake, stopAccel * 1.15), stopAccel * 0.9);
   // stopping: the last half metre per second rolls out on its own (a brake pedal on a standing car reverses it)
   if (target <= 0.3 && v < 0.6) return { forward: 0, backward: 0 };
   if (a > 0.05 || (a > -COAST && v > 0.3)) {
@@ -518,8 +529,15 @@ class Navigator {
     this._pt = {};
     this._pk = {};
     this._ph = {};
+    this._pe = {};
+    this.tracker = new Tracker();
+    this.evadeHold = 0;
+    this.evadeOffset = 0;
+    this.threat = null;
     this.holdLane = null;
-    this.offsetRate = 0;
+
+    this.line = null;
+    this.lineAcc = 1;
   }
 
   get active() { return Boolean(this.destination); }
@@ -530,6 +548,7 @@ class Navigator {
     if (d === this.driver) return;
     this.driver = d;
     this.offset = this.offsetTarget = 0;
+    this.line = null;
     this.stuckTime = this.reverseTime = 0;
     if (!d.auto) this.controllers.setAutopilotInput(null);
     if (d.id === 'crazy' && this.destination && !this.arrived) this.startFare();
@@ -578,6 +597,7 @@ class Navigator {
     this.progress = 0;
     this.offRouteTime = 0;
     this.offset = this.offsetTarget = 0;
+    this.line = null;
     if (this.fare && !force) this.fare.reroutes++;
     this.changed();
     return true;
@@ -711,6 +731,8 @@ class Navigator {
       this.event('takeover', {});
       return;
     }
+    // what it sees around it
+    this.tracker.update(dt, [this.traffic.cars, this.traffic.buses, this.traffic.peds], ent);
     this.drive(dt, elapsed, ent);
   }
 
@@ -793,7 +815,8 @@ class Navigator {
       this.reverseTime -= dt;
       const target = pointAt(path, s + 8, this.offset, this._pt);
       const steer = -pursuitSteer(x, z, car.heading, 2, target.x, target.z);
-      this.setInput(0, 0.7, steer);
+      // (backing off at a walking pace: reverse up to 2.5 m/s, braking beyond)
+      this.setInput(v < -2.6 ? 0.3 : 0, v > -2.4 ? 0.5 : 0, steer);
       this.status = 'Backing up';
       return;
     }
@@ -835,7 +858,8 @@ class Navigator {
     const leadA = this.leadOnPath(s, this.offset, range, d.margin);
     const leadB = Math.abs(across - this.offset) > 0.6 ? this.leadOnPath(s, across, range, d.margin) : null;
     const lead = leadB && (!leadA || leadB.gap < leadA.gap) ? leadB : leadA;
-    if (lead) {
+    // (a car coming the other way in its lane is no car to follow: getting out of its way is 2b's)
+    if (lead && !lead.oncoming) {
       // edging out round it (the car still behind it, steering for the other lane): creep up to a metre short
       const gap0 = lead === leadB ? 1.0 : d.gap0;
       const eff = lead.gap - gap0 - lead.speed * d.gapTime;
@@ -851,8 +875,13 @@ class Navigator {
     // Pinned behind a vehicle that isn't moving (a jam, a stalled car), and not for a red light: how long for
     this.blockedTime = lead && !lead.ped && lead.gap < 12 && lead.speed < 0.3 && speed < 0.6 && reason === 'Following traffic' ? (this.blockedTime || 0) + dt : 0;
 
-    // 2. Crazy Taxi: anything slower ahead gets passed, on whichever side is free
-    if (d.id === 'crazy') {
+    // 2. Lane choice (left to the swerve while it is getting out of the way of something, see 2b)
+    const evading = this.evadeHold > 0;
+    let holding = null;
+    // Crazy Taxi: anything slower ahead gets passed, on whichever side is free
+    if (evading) {
+      // (2b holds the line)
+    } else if (d.id === 'crazy') {
       this.swerveHold -= dt;
       // nose against a stopped car: reverse out and try another line
       if (this.blockedTime > 1.5) {
@@ -865,7 +894,9 @@ class Navigator {
       }
       const blocked = lead && lead.gap < 32 && vTarget < Math.min(d.cruise, pointAt(path, s + 10, 0, this._pt).v) - 3;
       if (blocked) {
-        const choice = this.findGap(s, speed);
+        // (the line it is already moving over to, while that stays clear; else the nearest free one)
+        const keep = Math.abs(this.offsetTarget) > 0.1 && this.lineClear(s, this.offsetTarget, 2, clamp(14 + speed * 1.2, 18, 45));
+        const choice = keep ? this.offsetTarget : this.findGap(s, speed);
         if (choice !== null && choice !== this.offsetTarget) {
           this.offsetTarget = choice;
           this.swerveHold = 1.6;
@@ -883,14 +914,11 @@ class Navigator {
       } else if (this.offsetTarget !== 0 && this.swerveHold <= 0 && this.lineClear(s, 0, 4, 26)) {
         this.offsetTarget = 0;
       }
-      // swerve faster at speed, never more than the car can turn
-      const rate = 3 + speed * 0.25;
-      this.offsetRate = rate;
-      this.offset += clamp(this.offsetTarget - this.offset, -rate * dt, rate * dt);
+      this.lineAcc = d.laneAcc;
     } else {
       // Self-driving: the route moves over a lane (for a turn ahead) where a car is alongside in that lane: keep to the
       // lane it is in until there is a gap, dropping back behind the car if the turn comes first
-      const holding = this.holdLaneChange(s, speed, dt);
+      holding = this.holdLaneChange(s, speed, dt);
       if (holding) {
         if (holding.vMax < vTarget) {
           vTarget = holding.vMax;
@@ -945,10 +973,41 @@ class Navigator {
           vTarget = Math.max(vTarget, Math.min(pointAt(path, s + speed * 0.35, 0, this._pt).v, eff2 === Infinity ? Infinity : Math.sqrt((lead2.speed ** 2) + 2 * d.brake * Math.max(0, eff2))));
         }
       }
-      // a gentle lane change: 1.2 m/s across
-      this.offsetRate = 1.2;
-      if (!holding) this.offset += clamp(this.offsetTarget - this.offset, -1.2 * dt, 1.2 * dt);
+      this.lineAcc = d.laneAcc;
     }
+
+    // 2b. What it sees coming: the traffic and people around it, predicted ahead, against what it plans to do
+    const aPlan = clamp((vTarget - speed) * 2, -9, ACCEL);
+    // (the car it is following and the line it is stopping at are its following's to deal with: left out, and the plan
+    // stops where it would)
+    const stopAt = reason === 'Red light' || reason === 'Amber light' ? s + Math.max(0, vTarget * vTarget / (2 * d.brake)) + 0.5 : Infinity;
+    const evade = this.avoid(s, speed, across, aPlan, dt, reason === 'Following traffic' && lead && !lead.oncoming ? lead.obj : null, stopAt);
+    let aCap = Infinity;
+    // (a braking it chose to keep clear is kept up a moment: let off as soon as the plan looks clear and it may well not
+    // be any more)
+    this.brakeHold = Math.max(0, (this.brakeHold || 0) - dt);
+    if (evade) {
+      this.brakeA = evade.a;
+      this.brakeHold = 0.6;
+    }
+    if (this.brakeHold > 0) aCap = this.brakeA;
+    if (evade) {
+      if (evade.offset !== undefined) {
+        this.evadeOffset = evade.offset;
+        this.evadeHold = 1.2;
+      }
+      reason = evade.reason;
+    }
+    if (this.evadeHold > 0) {
+      // (holding the line it swerved to a moment, whatever the lane logic above wanted)
+      this.evadeHold -= dt;
+      this.offsetTarget = this.evadeOffset;
+      this.lineAcc = d.safety.latAcc;
+      if (this.evadeHold <= 0 && d.id !== 'crazy') this.swerveHold = 0;
+    }
+    // over to the line it wants, as a smooth manoeuvre (unless a held lane change sets the line itself)
+    if (holding) this.line = null;
+    else this.updateLine(dt);
 
     // 3. Steering, from where the car will be once its steering and yaw catch up with the wheel (controllers.js eases
     //    both, ~0.2 s): the wheel angle the path's curvature there needs, plus corrections for the heading and for how
@@ -960,17 +1019,21 @@ class Navigator {
     const px = x + Math.sin(mid) * v * tau;
     const pz = z + Math.cos(mid) * v * tau;
     const sRef = Math.min(path.length, s + Math.max(0, v) * tau + (d.steerPreview ?? 1.4)); // about the front axle
-    const ref = pointAt(path, sRef, this.offset, this._pt);
+    // the line as it will be once the steering has caught up (the moment its error is measured at)
+    const lineAhead = this.lineAt(tau);
+    const ref = pointAt(path, sRef, lineAhead.y, this._pt);
     // the curvature over the next couple of metres (an offset line turns tighter on the inside of a bend)
     let kRef = 0;
     const win = d.curveWindow ?? [-1.5, 0, 1.5, 3];
     for (const ds of win) kRef += pointAt(path, clamp(sRef + ds, 0, path.length), 0, this._pk).ks;
     kRef /= win.length;
-    kRef = kRef / Math.max(0.3, 1 + this.offset * kRef);
+    kRef = kRef / Math.max(0.3, 1 + lineAhead.y * kRef);
+    // and the turning the manoeuvre across itself takes (moving right turns right: lower curvature)
+    if (Math.abs(v) > 2) kRef -= lineAhead.a / (v * v);
     const crossErr = (px - ref.x) * -ref.tz + (pz - ref.z) * ref.tx; // right of the line
     // moving across to a new line (overtaking, back in): head across at the rate the line moves (to the right lowers
     // the heading)
-    const offRate = Math.abs(this.offsetTarget - this.offset) > 0.05 && !this.holdLane ? Math.sign(this.offsetTarget - this.offset) * this.offsetRate : 0;
+    const offRate = lineAhead.v;
     const headingErr = wrapAngle(Math.atan2(ref.tx, ref.tz) - Math.atan2(offRate, Math.max(2, Math.abs(v))) - hp);
     const delta = Math.atan(WHEELBASE * kRef) + headingErr * d.steerHeading + Math.atan((d.steerCross * crossErr) / (Math.abs(v) + 1.5));
     const target = ref;
@@ -984,7 +1047,7 @@ class Navigator {
     else if (misalign > 0.6) vTarget = Math.min(vTarget, 8);
 
     // 4. Stuck?
-    const wantsToGo = vTarget > 2;
+    const wantsToGo = vTarget > 2 && aCap > -0.5;
     this.stuckTime = wantsToGo && speed < 0.6 ? this.stuckTime + dt : 0;
     if (this.stuckTime > (d.id === 'crazy' ? 1.0 : 2.2)) {
       this.stuckTime = 0;
@@ -992,9 +1055,152 @@ class Navigator {
       if (d.id === 'crazy') this.honk(car);
     }
 
-    const pedal = speedControl(v, vTarget, clamp(need * 1.15, d.brake * (d.id === 'crazy' ? 1.25 : 1.4), d.hardBrake), reason === 'Red light' || reason === 'Amber light' || reason === 'Following traffic' ? stopAccel : 0);
+    const pedal = speedControl(v, vTarget, clamp(need * 1.15, d.brake * (d.id === 'crazy' ? 1.25 : 1.4), d.hardBrake), reason === 'Red light' || reason === 'Amber light' || reason === 'Following traffic' ? stopAccel : 0, aCap);
     this.setInput(pedal.forward, pedal.backward, steer);
     this.status = reason;
+  }
+
+  /**
+   * The line it keeps to across the path: a smooth manoeuvre (half a cosine) from where the line was to offsetTarget,
+   * taking as long as moving that far at a peak sideways acceleration of this.lineAcc does. Sets this.offset to where
+   * the line is now.
+   */
+  updateLine(dt) {
+    const target = this.offsetTarget;
+    const acc = Math.max(0.3, this.lineAcc || 1);
+    const m = this.line;
+    if (!m || Math.abs(m.to - target) > 0.02 || (m.acc < acc - 0.01 && m.t < m.T)) {
+      // a new manoeuvre from where the line is, at least as fast as it is already moving across
+      const from = this.offset;
+      const dy = Math.abs(target - from);
+      this.line = { from, to: target, acc, t: 0, T: dy < 0.02 ? 0 : Math.PI * Math.sqrt(dy / (2 * acc)) };
+    }
+    this.line.t = Math.min(this.line.T, this.line.t + dt);
+    this.offset = this.lineAt(0).y;
+  }
+
+  /** The line `ahead` s from now: { y (m right of the path), v (m/s across), a (m/s² across) } */
+  lineAt(ahead = 0) {
+    const m = this.line;
+    if (!m || m.T <= 0) return { y: m ? m.to : this.offset, v: 0, a: 0 };
+    const t = Math.min(m.T, m.t + ahead);
+    const dy = m.to - m.from;
+    const w = Math.PI / m.T;
+    return {
+      y: m.from + (dy * (1 - Math.cos(w * t))) / 2,
+      v: t < m.T ? (dy * w * Math.sin(w * t)) / 2 : 0,
+      a: t < m.T ? (dy * w * w * Math.cos(w * t)) / 2 : 0
+    };
+  }
+
+  /**
+   * Seeing the traffic coming. Rolls the car forward along its path (from where it is across it, moving over to the line
+   * it is steering for) at the acceleration it means to drive with, and checks the predicted traffic and people against
+   * it (perception.js). Clear: null. Otherwise the mildest change that keeps clear: a gentler acceleration or braking
+   * (up to the driver's comfort), else a swerve to another line with as little braking as will do (self-driving keeps to
+   * its own side of the road unless nothing else works; Crazy Taxi swerves first and anywhere), else full brakes.
+   * Returns { a: acceleration cap, offset?: line to swerve to, reason }.
+   */
+  avoid(s, speed, across, aPlan, dt, followed = null, stopAt = Infinity) {
+    const d = this.driver;
+    const sf = d.safety;
+    const tracks = this.tracker.tracks;
+    if (!sf || !tracks.size) return (this.threat = null);
+    const path = this.path;
+    const pe = this._pe;
+    // (people predicted to stay on the pavement are none of its business)
+    const onSidewalk = this.network.onSidewalk;
+    const ignore = onSidewalk ? (tr, p) => tr.ped && onSidewalk(p.x, p.z) : null;
+    const opts = { horizon: sf.horizon, step: 0.1, clearance: sf.clearance, growth: sf.growth, pedClearance: sf.pedClearance, skip: followed ? (tr) => tr.obj === followed : null, ignore };
+    const vmax = Math.max(speed, d.cruise);
+    // (speeding up no faster than the engine manages at this speed)
+    // (less the rolling resistance and the air)
+    const aEngine = Math.max(0, ACCEL * Math.min(1, POWER_SPEED / Math.max(POWER_SPEED, speed + 2)) - 0.18 - 0.0012 * speed * speed);
+    // across the road: on the line's manoeuvre it is already making (for its own line), else a new one to off1 at
+    // `latAcc` (less the harder it brakes: the tyres share their grip), starting once the steering has caught up
+    const lag = 0.2;
+    const offAt = (off1, latAcc, a, t) => {
+      if (Math.abs(off1 - this.offsetTarget) < 0.02) return this.lineAt(t).y + (across - this.offset) * Math.max(0, 1 - t / 2);
+      const acc = Math.max(0.5, Math.min(latAcc, Math.sqrt(Math.max(0, GRIP * GRIP - a * a)) * 0.7));
+      const dy = off1 - across;
+      const T = Math.PI * Math.sqrt(Math.abs(dy) / (2 * acc));
+      const tt = Math.max(0, Math.min(T, t - lag));
+      return across + (dy * (1 - Math.cos((Math.PI * tt) / Math.max(1e-6, T)))) / 2;
+    };
+    const plan = (a0, off1, latAcc) => (t) => {
+      const a = Math.min(a0, aEngine);
+      // speed under a constant acceleration, never below 0 or above its cruise
+      let dist;
+      if (a < 0 && speed / -a < t) dist = (speed * speed) / (-2 * a);
+      else if (a > 0 && speed + a * t > vmax) {
+        const t1 = (vmax - speed) / a;
+        dist = speed * t1 + 0.5 * a * t1 * t1 + vmax * (t - t1);
+      } else dist = speed * t + 0.5 * a * t * t;
+      dist = Math.min(dist, stopAt - s);
+      // (and only as far across as it has gone along: a car standing still goes nowhere sideways)
+      const off = across + clamp(offAt(off1, latAcc, a, t) - across, -0.45 * dist, 0.45 * dist);
+      const q = pointAt(path, Math.min(path.length, s + dist), off, pe);
+      if (s + dist > path.length + 1) return null;
+      return { x: q.x, z: q.z, hx: q.tx, hz: q.tz };
+    };
+    const planned = firstConflict(plan(aPlan, this.offsetTarget, 0), tracks, opts);
+    if (!planned) return (this.threat = null);
+    this.threat = planned;
+    const who = planned.track.ped ? 'a person' : 'a vehicle';
+
+    // 1. Slow down (or speed up less) on the same line, up to the driver's comfortable braking
+    for (const a of [Math.min(aPlan, 0.5), 0, -1, -2, -3, -4.5, -6, -7.5, -9]) {
+      if (a > aPlan || a < -Math.min(sf.comfort, sf.maxBrake)) continue;
+      if (!firstConflict(plan(a, this.offsetTarget, 0), tracks, opts)) return { a, reason: a < -2.5 ? `Braking for ${who}` : `Yielding to ${who}` };
+    }
+
+    // 2. Swerve to another line, braking as little as will do (cost: how far across, how hard it brakes)
+    const pts = path.pts;
+    const here = pts[this.index];
+    const base = this.offsetTarget;
+    const lines = new Set();
+    // (and a lane over either way, whichever way that is, for when nothing on its own side will do)
+    for (const n of [...sf.nudges, 3.6]) {
+      lines.add(base + n);
+      lines.add(base - n);
+    }
+    // the lanes of its own road going its way
+    if (here && here.edge) for (const o of here.edge.lanes) lines.add(o - here.lane);
+    const clearRoad = this.network.isRoadClear;
+    const swerveOpts = { ...opts, clearance: opts.clearance + 0.4 };
+    let best = null;
+    for (const off of lines) {
+      if (Math.abs(off - base) < 0.3) continue;
+      // self-driving: within the lanes going its way (and a nudge past them) unless it has no other way out
+      const ownLanes = here && here.edge ? here.edge.lanes.map((o) => o - here.lane) : [0];
+      const outside = off < Math.min(...ownLanes) - 1.6 || off > Math.max(...ownLanes) + 1.6;
+      // the road must be there: no kerb, plaza or median along the swerve
+      let onRoad = true;
+      if (clearRoad) {
+        for (let k = 0; k < pts.length && onRoad; k++) {
+          const q = pts[this.index + k];
+          if (!q || q.s - s > Math.max(12, speed * 1.5)) break;
+          if (q.s < s) continue;
+          if (!clearRoad(q.x + q.nx * off, q.z + q.nz * off, 1.0)) onRoad = false;
+        }
+      }
+      if (!onRoad) continue;
+      // (speeding up too, if that is what it takes: a car crawling goes nowhere sideways)
+      for (const a of [Math.min(aPlan, 0), -1.5, -3, -4.5, -6, -9, aEngine]) {
+        if (a > aPlan + 1e-9 && a !== Math.min(aPlan, 0) && a !== aEngine) continue;
+        // (and sticking to the way out it already chose, rather than flip-flopping between two)
+        const sticky = this.evadeHold > 0 ? Math.abs(off - this.evadeOffset) * 3 : 0;
+        const cost = Math.abs(off - base) * sf.lateralCost + Math.abs(a) + (outside && sf.ownSide ? 40 : 0) + sticky;
+        if (best && cost >= best.cost) continue;
+        // (a swerve is taken only with room to spare: the car may not get across quite as the plan says)
+        if (!firstConflict(plan(a, off, sf.latAcc), tracks, swerveOpts)) best = { a, offset: off, cost };
+      }
+    }
+    // (braking alone does not keep it clear, so any line that does beats it)
+    if (best) return { a: best.a, offset: best.offset, reason: `Swerving round ${who}` };
+
+    // 3. Nothing keeps clear: everything on the brakes (on the line that puts the conflict off longest)
+    return { a: -sf.maxBrake, reason: `Emergency stop for ${who}` };
   }
 
   /**
@@ -1081,7 +1287,7 @@ class Navigator {
         if (across > halfWidth + CAR_HALF_W + margin) continue;
         const gap = ahead + along - half - CAR_HALF_L;
         if (gap < -CAR_HALF_L * 1.5) return; // beside or behind us
-        if (!best || gap < best.gap) best = { gap, speed: Math.max(0, speed * (tx * p.tx + tz * p.tz)), ped };
+        if (!best || gap < best.gap) best = { gap, speed: Math.max(0, speed * (tx * p.tx + tz * p.tz)), ped, obj: o, oncoming: speed > 1 && tx * p.tx + tz * p.tz < -0.3 };
         return;
       }
     };
@@ -1089,7 +1295,10 @@ class Navigator {
       if (!list) continue;
       for (const v of list) {
         if (!v.edge) continue;
-        consider(v, v.half || 2.3, v.halfWidth || 0.9, v.speed || 0, v.tx ?? 0, v.tz ?? 1, false);
+        // its speed and direction as seen (perception.js), not read off it
+        const tr = this.tracker.get(v);
+        if (tr) consider(v, tr.half, tr.hw, tr.speed, tr.speed > 0.3 ? tr.vx / tr.speed : tr.hx, tr.speed > 0.3 ? tr.vz / tr.speed : tr.hz, false);
+        else consider(v, v.half || 2.3, v.halfWidth || 0.9, 0, v.tx ?? 0, v.tz ?? 1, false);
       }
     }
     if (this.driver.peds && this.traffic.peds) {
@@ -1147,7 +1356,8 @@ class Navigator {
   // The nearest free line to swerve into: a lane's width either side, then two
   findGap(s, speed) {
     const reach = clamp(14 + speed * 1.2, 18, 45);
-    const options = [-3.4, 3.4, -6.8, 6.8, -10.2, 10.2].map((o) => o + Math.round(this.offset / 3.4) * 3.4);
+    // (squeezing past at 2.6 m, half in the next lane, before taking the whole lane)
+    const options = [-2.6, 2.6, -3.4, 3.4, -6.8, 6.8, -10.2, 10.2];
     options.sort((a, b) => Math.abs(a - this.offset) - Math.abs(b - this.offset));
     for (const o of options) {
       if (Math.abs(o) > 11) continue;

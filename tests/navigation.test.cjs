@@ -25,8 +25,13 @@ const { makeCurve, curvePoint, updateCar } = vm.runInNewContext(`
 `, { Math, Float32Array });
 
 let phase = 'green';
+const perception = loadModule(readFileSync(join(__dirname, '../js/perception.js'), 'utf8'), {
+  globals: { Math, Number, Map, Set, WeakMap, Array, Infinity, Object },
+  filename: 'perception.js'
+});
 const nav = loadModule(readFileSync(join(__dirname, '../js/navigation.js'), 'utf8'), {
   imports: {
+    './perception.js': perception,
     './city-config.js': {
       signalPhase: () => phase,
       nearestRoads: () => []
@@ -82,7 +87,13 @@ function grid(n = 4, block = 100) {
       return curves.get(k);
     },
     curvePoint,
-    isRoadClear: () => true
+    isRoadClear: () => true,
+    // pavements: 7.2-11 m either side of each street's centre line
+    onSidewalk: (x, z) => {
+      const dx = Math.abs(x - Math.round(x / block) * block);
+      const dz = Math.abs(z - Math.round(z / block) * block);
+      return (dx > 7.2 && dx < 11 && dz > 11) || (dz > 7.2 && dz < 11 && dx > 11);
+    }
   };
 }
 
@@ -315,14 +326,34 @@ test('self-driving goes round stalled cars through the clear oncoming lane after
 // Lane keeping & car following on the car's own physics (updateCar: steering lag, yaw lag, tyre slip)
 // ---------------------------------------------------------------------------------------------------------------------
 
+// How far apart the taxi and `o` are (m, < 0 overlapping), body to body: each as a run of circles along its length
+function clearance(car, o) {
+  const body = (x, z, hx, hz, half, hw) => {
+    const n = Math.max(1, Math.round(half / hw));
+    const span = Math.max(0, half - hw);
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const a = n === 1 ? 0 : -span + (2 * span * i) / (n - 1);
+      out.push([x + hx * a, z + hz * a]);
+    }
+    return { out, r: hw + 0.12 };
+  };
+  const a = body(car.position.x, car.position.z, Math.sin(car.heading), Math.cos(car.heading), 2.25, 0.9);
+  const l = Math.hypot(o.tx ?? 0, o.tz ?? 1) || 1;
+  const b = o.half === undefined ? body(o.x, o.z, 0, 1, 0.35, 0.35) : body(o.x, o.z, (o.tx ?? 0) / l, (o.tz ?? 1) / l, o.half, o.halfWidth);
+  let gap = Infinity;
+  for (const [ax, az] of a.out) for (const [bx, bz] of b.out) gap = Math.min(gap, Math.hypot(ax - bx, az - bz) - a.r - b.r);
+  return gap;
+}
+
 // Drives `driver` to `dest` on a grid, measuring how far the car strays from its line (the path plus the
 // autopilot's chosen offset) and how often the steering reverses on straight road
-function track(driver, dest, { dt = 1 / 60, T = 240, cars = [], each = null, start = [1.8, 20, 0], net = grid(6, 120) } = {}) {
+function track(driver, dest, { dt = 1 / 60, T = 240, cars = [], peds = [], each = null, start = [1.8, 20, 0], net = grid(6, 120) } = {}) {
   const car = makeCar(...start);
-  const r = rig(net, car, { cars, buses: [], peds: [] });
+  const r = rig(net, car, { cars, buses: [], peds });
   r.navigator.setDriver(driver);
   assert.ok(r.navigator.setDestination(dest[0], dest[1], 'x'), 'route found');
-  const stats = { maxErr: 0, straightErr: 0, reversals: 0, minGap: Infinity, t: 0 };
+  const stats = { maxErr: 0, straightErr: 0, reversals: 0, minGap: Infinity, minClear: Infinity, t: 0 };
   let lastSteer = 0;
   let t = 0;
   let minSpeed = Infinity;
@@ -341,12 +372,17 @@ function track(driver, dest, { dt = 1 / 60, T = 240, cars = [], each = null, sta
       const across = Math.abs((v.x - car.position.x) * fz - (v.z - car.position.z) * fx);
       if (across < 1.8 && along > -2) stats.minGap = Math.min(stats.minGap, along - 4.5);
     }
+    for (const o of [...cars, ...peds]) {
+      if (o.placed === false) continue;
+      stats.minClear = Math.min(stats.minClear, clearance(car, o));
+    }
     const p = r.navigator.path;
     const loc = nav.locate(p, car.position.x, car.position.z, r.navigator.index, 40);
     // once moving and clear of the lead-in from where the car stood
     if (t > 2 && loc.s > 12 && r.navigator.progress < p.length - 6) {
       const err = Math.abs(loc.across - r.navigator.offset);
-      stats.maxErr = Math.max(stats.maxErr, err);
+      // (not while it holds its lane against the path's own lane change: its line is then the lane, not the path)
+      if (r.navigator.holdLane == null) stats.maxErr = Math.max(stats.maxErr, err);
       // straight road: no curvature within 25 m either side
       const quiet = p.pts.every((q) => Math.abs(q.s - loc.s) > 25 || q.k < 0.004);
       if (quiet && Math.abs(r.navigator.offsetTarget - r.navigator.offset) < 0.05 && !r.navigator.holdLane) {
@@ -546,4 +582,125 @@ test('self-driving waits for a gap before moving over for a turn, instead of mer
   assert.equal(overlap, 0, 'never in the same space as the car alongside');
   assert.ok(changedAt === null || changedAt > 200, `moves over once it's clear (at z ${changedAt && changedAt.toFixed(0)})`);
   assert.ok(r.navigator.arrived, 'and makes the turn');
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Seeing the traffic coming: tracks estimated from what it sees, predicted ahead, and avoided
+// ---------------------------------------------------------------------------------------------------------------------
+
+// A car that runs the red across the taxi's junction (z 300 on a 300 m grid), timed to arrive just as the taxi does
+function redRunner(driver) {
+  phase = 'green';
+  const runner = { edge: {}, x: -400, z: 300 - 1.8, speed: 0, tx: 1, tz: 0, half: 2.3, halfWidth: 0.9 };
+  let launched = false;
+  const s = track(driver, [1.8, 560], {
+    net: grid(2, 300), T: 60, cars: [runner],
+    each: (v, t, car) => {
+      // once the taxi is 70 m short of the junction, the runner appears 70 m to its side doing what the taxi does
+      if (!launched && 300 - car.position.z < 70 + 2.25) {
+        launched = true;
+        v.speed = Math.max(12, car.speed);
+        v.x = -(300 - car.position.z) * (v.speed / Math.max(1, car.speed)) + 0.5;
+      }
+    }
+  });
+  assert.ok(launched, 'the runner went');
+  return s;
+}
+
+test('self-driving sees a car running the red across its junction and stops for it', () => {
+  const s = redRunner('self');
+  assert.ok(s.minClear > 0.8, `well clear of it (${s.minClear.toFixed(2)} m)`);
+  assert.ok(s.navigator.progress > 400, 'and goes on after it');
+});
+
+test('Crazy Taxi gets out of the red runner\'s way too, closer', () => {
+  const s = redRunner('crazy');
+  assert.ok(s.minClear > 0, `no collision (${s.minClear.toFixed(2)} m)`);
+});
+
+test('self-driving avoids an oncoming car drifting into its lane', () => {
+  phase = 'green';
+  // oncoming on the other side of the road, wandering across the centre line into the taxi's lane
+  const drifter = { edge: {}, x: -1.8, z: 420, speed: 14, tx: 0, tz: -1, half: 2.3, halfWidth: 0.9 };
+  const s = track('self', [1.8, 560], {
+    net: grid(2, 300), T: 40, cars: [drifter],
+    each: (v, t, car) => {
+      const ahead = v.z - car.position.z;
+      if (ahead < 110 && v.x < 1.8) v.x = Math.min(1.8, v.x + 1.4 / 60); // drifts over at 1.4 m/s, ends up head-on
+      v.tx = 0; v.tz = -1;
+    }
+  });
+  assert.ok(s.minClear > 0.3, `no collision (${s.minClear.toFixed(2)} m)`);
+});
+
+test('self-driving stops for a person stepping out into its lane; Crazy Taxi goes round them', () => {
+  for (const driver of ['self', 'crazy']) {
+    phase = 'green';
+    const net = grid(2, 300);
+    const car = makeCar(1.8, 20, 0);
+    const person = { placed: false, x: 6.5, z: 0 };
+    const r = rig(net, car, { cars: [], buses: [], peds: [person] });
+    r.navigator.setDriver(driver);
+    r.navigator.setDestination(1.8, 560, 'x');
+    let minClear = Infinity;
+    let t = 0;
+    while (t < 30 && !r.navigator.arrived) {
+      // up to speed, then a person steps off the kerb 35 m ahead and walks into the lane at 1.4 m/s
+      if (!person.placed && car.speed > 12) {
+        person.placed = true;
+        person.z = car.position.z + 35;
+      }
+      if (person.placed && person.x > 1.8) person.x = Math.max(1.8, person.x - 1.4 / 60);
+      r.navigator.update(1 / 60, t);
+      stepCar(car, r.keys, 1 / 60);
+      if (person.placed) minClear = Math.min(minClear, clearance(car, person));
+      t += 1 / 60;
+    }
+    assert.ok(minClear > (driver === 'self' ? 1.0 : 0.2), `${driver}: misses them (${minClear.toFixed(2)} m)`);
+  }
+});
+
+test('self-driving survives a car ahead braking at 8 m/s² from 90 km/h', () => {
+  phase = 'green';
+  const lead = slowCar(1.8, 80, 25);
+  const s = track('self', [1.8, 1450], {
+    net: grid(2, 750), T: 40, cars: [lead],
+    // matches the taxi's speed, then at 20 s slams on the brakes
+    each: (v, t, car) => { v.speed = t < 20 ? 25 : Math.max(0, v.speed - 8 / 60); }
+  });
+  assert.ok(s.minClear > 0.5, `stops behind it (${s.minClear.toFixed(2)} m)`);
+});
+
+test('Crazy Taxi keeps less room than self-driving: passing a slow car, and behind traffic', () => {
+  const close = {};
+  for (const driver of ['self', 'crazy']) {
+    phase = 'green';
+    const slow = slowCar(1.8, 70, 5);
+    const s = track(driver, [1.8, 560], { net: grid(2, 300), T: 30, cars: [slow] });
+    close[driver] = s.minClear;
+  }
+  assert.ok(close.crazy < close.self - 0.3, `Crazy Taxi cuts it finer (${close.crazy.toFixed(2)} m vs ${close.self.toFixed(2)} m)`);
+  assert.ok(close.crazy > 0, 'without hitting it');
+});
+
+test('self-driving keeps going past people walking along the pavement beside its lane', () => {
+  phase = 'green';
+  // its route moves into the kerbside lane (x 5.4) for a left turn; people walk along the pavement 2.2 m beyond it
+  const net = grid(2, 300);
+  const car = makeCar(1.8, 20, 0);
+  const walkers = [60, 120, 180, 230].map((z, k) => ({ placed: true, x: 7.6, z, dir: k % 2 ? 1 : -1 }));
+  const r = rig(net, car, { cars: [], buses: [], peds: walkers });
+  r.navigator.setDriver('self');
+  r.navigator.setDestination(200, 300, 'east');
+  let t = 0;
+  let slowest = Infinity;
+  while (t < 30 && car.position.z < 240) {
+    for (const w of walkers) w.z += w.dir * 1.4 / 60;
+    r.navigator.update(1 / 60, t);
+    stepCar(car, r.keys, 1 / 60);
+    if (car.position.z > 50) slowest = Math.min(slowest, car.speed);
+    t += 1 / 60;
+  }
+  assert.ok(slowest > 12, `never brakes for them (${slowest.toFixed(1)} m/s)`);
 });
