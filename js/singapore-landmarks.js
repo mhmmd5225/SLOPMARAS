@@ -1,16 +1,21 @@
 import * as THREE from 'three/webgpu';
-import { Fn, uv, float, vec3, mix, step, fract, floor, sin, smoothstep, max, positionWorld, time } from 'three/tsl';
+import { Fn, uv, float, vec3, mix, step, fract, floor, sin, smoothstep, max, positionWorld, time, attribute } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
 import { GEO } from './geodata.js';
 
 // js/singapore-landmarks.js
-// Singapore's two skyline icons, modelled low-poly from their real dimensions and placed where OpenStreetMap maps them
+// Singapore's skyline icons, modelled low-poly from their real dimensions and placed where OpenStreetMap maps them
 // (tools/city/build.mjs leaves their mapped outlines out of GEO.buildings: tools/city/cities/singapore.mjs landmarks):
 // - Marina Bay Sands: three 193 m hotel towers, each of two legs, the eastern one curving out from the 23rd storey down
 //   to the ground, carrying the 340 m SkyPark with its cantilevered bow, infinity pool and gardens; at night the towers'
 //   rooms light up and Spectra's beams sweep the sky
 // - Singapore Flyer: a 150 m wheel (165 m to the top) on two A-frames with 28 capsules outboard of the rim that stay
 //   level as it turns, clockwise seen from Marina Centre, once in about 32 minutes; its rim glows at night
+// - Gardens by the Bay's Supertrees: 15 vertical gardens of steel, 26-50 m tall, each a planted trunk opening into a
+//   funnel of branches under a ring, the OCBC Skyway strung between the grove's tallest at 22 m; at night the canopies
+//   light up in the Garden Rhapsody's slow wash of colours
+// - Esplanade - Theatres on the Bay: the concert hall's and the theatre's shells, domes covered in triangular aluminium
+//   sunshades (the "durian"), fitted to their mapped outlines, glowing warm between the spikes at night
 // Returns { group, colliders (as js/open-city-buildings.js's), footprints (for the maps), update(elapsed) }.
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -116,6 +121,36 @@ function rimLightMaterial() {
 function capsuleMaterial() {
   const m = new THREE.MeshStandardNodeMaterial({ color: 0x9fb8c8, roughness: 0.08, metalness: 0.7 });
   m.emissiveNode = vec3(0.85, 0.9, 1.0).mul(nightNode()).mul(0.45);
+  return m;
+}
+
+// A Supertree's trunk: its planting (greens, purples) between the steel ribs
+function supertreeTrunkMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0.1 });
+  const p = uv();
+  const rib = step(0.82, fract(p.x.mul(12)));
+  const patch = fract(sin(floor(p.x.mul(36)).mul(91.7).add(floor(p.y.div(1.6)).mul(13.1))).mul(43758.5453));
+  const planting = mix(mix(vec3(0.16, 0.34, 0.14), vec3(0.3, 0.46, 0.18), step(0.5, patch)), vec3(0.42, 0.2, 0.36), step(0.86, patch));
+  m.colorNode = mix(planting, vec3(0.52, 0.32, 0.5), rib);
+  m.metalnessNode = mix(float(0), float(0.6), rib);
+  return m;
+}
+// Its canopy's steel, lit at night: each tree's own hue drifting through the show's colours
+function supertreeCanopyMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ color: 0x7a4f78, roughness: 0.4, metalness: 0.7 });
+  const phase = fract(sin(floor(positionWorld.x.div(9)).mul(17.3).add(floor(positionWorld.z.div(9)).mul(7.9))).mul(43758.5453)).mul(6.28);
+  const t = time.mul(0.45).add(phase);
+  const hue = vec3(sin(t).mul(0.5).add(0.5), sin(t.add(2.1)).mul(0.5).add(0.5), sin(t.add(4.2)).mul(0.5).add(0.5));
+  m.emissiveNode = mix(vec3(0.95, 0.35, 0.85), hue, 0.7).mul(nightNode()).mul(1.8);
+  return m;
+}
+// The Esplanade's shells: aluminium sunshades, the glass between them glowing warm at night (`glow`: 1 at a spike's
+// base, 0 at its tip)
+function sunshadeMaterial() {
+  const m = new THREE.MeshStandardNodeMaterial({ color: 0xb9bab4, roughness: 0.42, metalness: 0.75 });
+  const glow = attribute('glow', 'float');
+  m.colorNode = mix(vec3(0.74, 0.74, 0.71), vec3(0.2, 0.22, 0.22), glow.mul(glow));
+  m.emissiveNode = vec3(1.0, 0.72, 0.4).mul(glow.mul(glow).mul(glow)).mul(nightNode()).mul(1.4);
   return m;
 }
 
@@ -414,6 +449,173 @@ function buildSingaporeFlyer(toWorld, colliders, footprints) {
   return { group, update };
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Gardens by the Bay: the Supertrees
+// ---------------------------------------------------------------------------------------------------------------------
+// [lat, lon, height (m)]: the 12 of Supertree Grove and the 3 of the Silver Garden, from their mapped building:parts
+const SUPERTREES = [
+  [1.281308, 103.863662, 36], [1.282003, 103.864327, 41], [1.282325, 103.864165, 45], [1.28166, 103.864131, 41],
+  [1.282297, 103.863592, 41], [1.282435, 103.863842, 41], [1.282497, 103.864402, 41], [1.281998, 103.863467, 41],
+  [1.281754, 103.864416, 41], [1.281583, 103.863729, 40], [1.281946, 103.863936, 50], [1.28219, 103.864476, 41],
+  [1.284395, 103.863539, 26], [1.284358, 103.863331, 26], [1.28419, 103.863577, 30]
+];
+// The OCBC Skyway: 128 m at 22 m, strung through the grove's tallest (indices into SUPERTREES)
+const SKYWAY = { trees: [9, 10, 2], height: 22 };
+
+function buildSupertrees(toWorld, colliders, footprints) {
+  const group = new THREE.Group();
+  group.name = 'Supertrees';
+  const trunk = new Mesher();
+  const canopy = [];
+  const tube = (a, b, r0, r1, sides = 4) => {
+    const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b);
+    const len = va.distanceTo(vb);
+    const g = new THREE.CylinderGeometry(r1, r0, len, sides, 1, true).translate(0, len / 2, 0);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), vb.clone().sub(va).normalize()));
+    canopy.push(g.translate(va.x, va.y, va.z));
+  };
+  const at = SUPERTREES.map(([lat, lon, h]) => { const [x, z] = toWorld(lat, lon); return { x, z, h }; });
+  at.forEach(({ x, z, h }, n) => {
+    // the trunk: a lathe narrowing from the ground to where the canopy opens, its uv around (0..1) & up (m)
+    const SIDES = 14;
+    const ring = (y) => (y < 0.08 ? 0.07 : 0.07 - 0.032 * Math.min(1, (y - 0.08) / 0.55)) * h * (y > 0.63 ? 1 + (y - 0.63) * 3 : 1);
+    const ys = [0, 0.08, 0.25, 0.45, 0.63, 0.7];
+    for (let k = 0; k + 1 < ys.length; k++) {
+      const y0 = ys[k] * h, y1 = ys[k + 1] * h, r0 = ring(ys[k]), r1 = ring(ys[k + 1]);
+      for (let i = 0; i < SIDES; i++) {
+        const a0 = (i / SIDES) * Math.PI * 2, a1 = ((i + 1) / SIDES) * Math.PI * 2;
+        const P = (a, r, y) => [x + Math.cos(a) * r, y, z + Math.sin(a) * r];
+        trunk.quad(P(a1, r0, y0), P(a0, r0, y0), P(a0, r1, y1), P(a1, r1, y1), [(i + 1) / SIDES, y0], [i / SIDES, y0], [i / SIDES, y1], [(i + 1) / SIDES, y1]);
+      }
+    }
+    // the canopy: branches fanning out from the trunk's top to a ring, a lattice of hoops between them
+    const yIn = 0.68 * h, yTop = h, rIn = ring(0.7), rTop = 0.26 * h;
+    const BRANCHES = 16;
+    const spin = n * 0.37;
+    for (let i = 0; i < BRANCHES; i++) {
+      const a = spin + (i / BRANCHES) * Math.PI * 2;
+      const c = Math.cos(a), sn = Math.sin(a);
+      // a branch bows outwards: inner third steeper
+      const mid = [x + c * (rIn + (rTop - rIn) * 0.45), yIn + (yTop - yIn) * 0.62, z + sn * (rIn + (rTop - rIn) * 0.45)];
+      tube([x + c * rIn, yIn, z + sn * rIn], mid, 0.32, 0.24);
+      tube(mid, [x + c * rTop, yTop, z + sn * rTop], 0.24, 0.16);
+    }
+    for (const [f, r] of [[0.55, 0.12], [1, 0.32]]) {
+      const yy = yIn + (yTop - yIn) * (f === 1 ? 1 : 0.62), rr = f === 1 ? rTop : rIn + (rTop - rIn) * 0.45;
+      canopy.push(new THREE.TorusGeometry(rr, r, 4, 40).rotateX(Math.PI / 2).translate(x, yy, z));
+    }
+    const r0 = ring(0);
+    colliders.push(obbCollider(x, z, r0, r0, 1, 0, 0, 0.7 * h));
+    colliders.push(obbCollider(x, z, rTop * 0.75, rTop * 0.75, 1, 0, 0.82 * h, h + 0.5));
+    const fp = [];
+    for (let i = 0; i < 8; i++) fp.push(x + Math.cos((i / 8) * Math.PI * 2) * rTop, z + Math.sin((i / 8) * Math.PI * 2) * rTop);
+    footprints.push({ pts: new Float32Array(fp), h });
+  });
+  // the skyway: a deck from trunk to trunk, its rails, 22 m up
+  const y = SKYWAY.height;
+  for (let k = 0; k + 1 < SKYWAY.trees.length; k++) {
+    const a = at[SKYWAY.trees[k]], b = at[SKYWAY.trees[k + 1]];
+    const len = Math.hypot(b.x - a.x, b.z - a.z);
+    const deck = new THREE.BoxGeometry(len, 0.35, 1.8).rotateY(-Math.atan2(b.z - a.z, b.x - a.x)).translate((a.x + b.x) / 2, y, (a.z + b.z) / 2);
+    canopy.push(deck);
+    const ux = (b.x - a.x) / len, uz = (b.z - a.z) / len;
+    for (const side of [-0.85, 0.85]) tube([a.x - uz * side, y + 1.05, a.z + ux * side], [b.x - uz * side, y + 1.05, b.z + ux * side], 0.05, 0.05);
+  }
+  const trunks = new THREE.Mesh(trunk.geometry(), supertreeTrunkMaterial());
+  trunks.name = 'Supertrees_trunks';
+  const canopies = new THREE.Mesh(mergeGeometries(canopy), supertreeCanopyMaterial());
+  canopies.name = 'Supertrees_canopies';
+  for (const mesh of [trunks, canopies]) mesh.castShadow = mesh.receiveShadow = true;
+  group.add(trunks, canopies);
+  return { group };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Esplanade - Theatres on the Bay
+// ---------------------------------------------------------------------------------------------------------------------
+// The shells fitted to their mapped outlines: centre, long & short axes (m), the long axis' angle from true east
+// towards the south (deg), height (m)
+const ESPLANADE = [
+  { name: 'Concert Hall', at: [1.289374, 103.855176], len: 96, wid: 63, angle: 163, height: 38 },
+  { name: 'Theatre', at: [1.290218, 103.855554], len: 107, wid: 64, angle: 66.5, height: 42 }
+];
+
+function buildEsplanade(toWorld, colliders, footprints) {
+  const group = new THREE.Group();
+  group.name = 'Esplanade';
+  const pos = [], nrm = [], glow = [];
+  const th = ((GEO.frame.bearingDeg || 0) * Math.PI) / 180;
+  for (const shell of ESPLANADE) {
+    const [cx, cz] = toWorld(...shell.at);
+    // the long axis in the world frame: true east turned `angle` towards the south, then into the grid frame
+    const a = (shell.angle * Math.PI) / 180;
+    const ex = Math.cos(a), sz = Math.sin(a); // (east, south) of the axis
+    const ux = ex * Math.cos(th) + sz * Math.sin(th), uz = -ex * Math.sin(th) + sz * Math.cos(th);
+    const A = shell.len / 2, B = shell.wid / 2, H = shell.height;
+    // a superellipsoid dome: steep sides, a rounded crown, its surface point at (around t, up v)
+    const P = (t, v) => {
+      const lift = Math.sin(v * Math.PI / 2);
+      const spread = Math.pow(Math.cos(v * Math.PI / 2), 0.62);
+      const p = Math.cos(t) * A * spread, q = Math.sin(t) * B * spread;
+      return [cx + p * ux - q * uz, H * lift, cz + p * uz + q * ux];
+    };
+    const AROUND = 72, UP = 22;
+    const grid = [];
+    for (let j = 0; j <= UP; j++) {
+      const row = [];
+      for (let i = 0; i <= AROUND; i++) row.push(P((i / AROUND) * Math.PI * 2, (j / UP) * 0.995));
+      grid.push(row);
+    }
+    // a sunshade on every cell: a pyramid from the cell's corners to its centre pushed out along the surface's normal
+    for (let j = 0; j < UP; j++) {
+      for (let i = 0; i < AROUND; i++) {
+        const c = [grid[j][i], grid[j][i + 1], grid[j + 1][i + 1], grid[j + 1][i]];
+        const m = [0, 1, 2].map((k) => (c[0][k] + c[1][k] + c[2][k] + c[3][k]) / 4);
+        const e1 = [0, 1, 2].map((k) => c[2][k] - c[0][k]), e2 = [0, 1, 2].map((k) => c[3][k] - c[1][k]);
+        let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        const L = Math.hypot(...n) || 1;
+        n = n.map((v) => v / L);
+        // outward: away from the dome's axis & up
+        if (n[0] * (m[0] - cx) + n[1] * m[1] * 0.3 + n[2] * (m[2] - cz) < 0) n = n.map((v) => -v);
+        const size = Math.hypot(...e1) * 0.5;
+        const tip = m.map((v, k) => v + n[k] * size * 0.55);
+        for (let k = 0; k < 4; k++) {
+          const p0 = c[k], p1 = c[(k + 1) % 4];
+          // wound outward
+          const fa = [0, 1, 2].map((q) => p1[q] - p0[q]), fb = [0, 1, 2].map((q) => tip[q] - p0[q]);
+          let fn = [fa[1] * fb[2] - fa[2] * fb[1], fa[2] * fb[0] - fa[0] * fb[2], fa[0] * fb[1] - fa[1] * fb[0]];
+          const out = fn[0] * n[0] + fn[1] * n[1] + fn[2] * n[2] > 0;
+          const [q0, q1] = out ? [p0, p1] : [p1, p0];
+          if (!out) fn = fn.map((v) => -v);
+          const fl = Math.hypot(...fn) || 1;
+          pos.push(...q0, ...q1, ...tip);
+          for (let v = 0; v < 3; v++) nrm.push(fn[0] / fl, fn[1] / fl, fn[2] / fl);
+          glow.push(1, 1, 0);
+        }
+      }
+    }
+    // colliders: stacked turned boxes inside the dome
+    for (let k = 0; k < 4; k++) {
+      const v0 = k / 4, v1 = (k + 1) / 4;
+      const spread = Math.pow(Math.cos(v1 * Math.PI / 2), 0.62);
+      colliders.push(obbCollider(cx, cz, A * spread * 0.92, B * spread * 0.92, ux, uz, H * Math.sin(v0 * Math.PI / 2), H * Math.sin(v1 * Math.PI / 2)));
+    }
+    const fp = [];
+    for (let i = 0; i < 24; i++) { const p = P((i / 24) * Math.PI * 2, 0); fp.push(p[0], p[2]); }
+    footprints.push({ pts: new Float32Array(fp), h: H });
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('glow', new THREE.Float32BufferAttribute(glow, 1));
+  g.computeBoundingSphere();
+  const mesh = new THREE.Mesh(g, sunshadeMaterial());
+  mesh.name = 'Esplanade_shells';
+  mesh.castShadow = mesh.receiveShadow = true;
+  group.add(mesh);
+  return { group };
+}
+
 // Minimal BufferGeometryUtils.mergeGeometries for non-indexed / indexed geometries with the same attributes
 function mergeGeometries(geometries) {
   const out = new THREE.BufferGeometry();
@@ -443,9 +645,11 @@ function buildSingaporeLandmarks(scene) {
   group.name = 'SingaporeLandmarks';
   const mbs = buildMarinaBaySands(toWorld, colliders, footprints);
   const flyer = buildSingaporeFlyer(toWorld, colliders, footprints);
-  group.add(mbs.group, flyer.group);
+  const supertrees = buildSupertrees(toWorld, colliders, footprints);
+  const esplanade = buildEsplanade(toWorld, colliders, footprints);
+  group.add(mbs.group, flyer.group, supertrees.group, esplanade.group);
   scene.add(group);
-  console.info(`[landmarks] Marina Bay Sands & the Singapore Flyer in ${Math.round(performance.now() - t0)} ms`);
+  console.info(`[landmarks] Marina Bay Sands, the Singapore Flyer, ${SUPERTREES.length} Supertrees & the Esplanade in ${Math.round(performance.now() - t0)} ms`);
   return {
     group,
     colliders,
@@ -457,4 +661,4 @@ function buildSingaporeLandmarks(scene) {
   };
 }
 
-export { buildSingaporeLandmarks, makeToWorld, MBS, FLYER };
+export { buildSingaporeLandmarks, makeToWorld, MBS, FLYER, SUPERTREES, SKYWAY, ESPLANADE };

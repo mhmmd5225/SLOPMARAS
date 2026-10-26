@@ -4,7 +4,7 @@ A Singapore city simulation built with [three.js](https://threejs.org/), WebGPUR
 
 [Try it live](https://zz85.github.io/slop-singapore/)
 
-Singapore's own touches: Marina Bay Sands (three towers on their leaning legs under the SkyPark, its pool and gardens, Spectra's beams at night) and the Singapore Flyer (turning once in 32 minutes, its rim lit at night) modelled low-poly where OpenStreetMap maps them; koels calling, cicadas at dusk and crickets at night; afternoon thunderstorms with rain, lightning and thunder that arrives at the speed of sound (the storm button or `R`, or open the page with `?storm`); and the rest of the island beyond the Central Area — the HDB estates, Jurong, Changi, Sentosa — streamed in tiles of buildings and main roads around you as you fly.
+Singapore's own touches: Marina Bay Sands (three towers on their leaning legs under the SkyPark, its pool and gardens, Spectra's beams at night) and the Singapore Flyer (turning once in 32 minutes, its rim lit at night), the Supertrees of Gardens by the Bay (with the OCBC Skyway and their light show at night) and the Esplanade's spiky shells, modelled low-poly where OpenStreetMap maps them; koels calling, cicadas at dusk and crickets at night; afternoon thunderstorms with rain, lightning and thunder that arrives at the speed of sound (the storm button or `R`, or open the page with `?storm`); and the rest of the island beyond the Central Area — the HDB estates, Jurong, Changi, Sentosa — streamed in tiles of buildings and main roads around you as you fly, built in a Web Worker.
 
 Slop Singapore grew out of mrdoob's [Slop New York](https://github.com/mrdoob/slop-newyork), and New York still runs here: open the page with `?city=nyc`.
 

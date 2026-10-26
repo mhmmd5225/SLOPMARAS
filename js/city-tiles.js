@@ -1,27 +1,17 @@
 import * as THREE from 'three/webgpu';
 import { Fn, uv, float, vec3, mix, step, fract, floor, sin, smoothstep, attribute, positionWorld, positionView } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
+import { buildTileArrays } from './city-tiles-build.js';
 
 // js/city-tiles.js
 // The rest of the island beyond the detailed city: its land, and its buildings and main roads streamed in tiles around
 // the camera (tools/city/tiles.mjs writes tiles/<city>/index.json and a JSON file per tile). Kept cheap: one merged
 // mesh of walls, one of roofs and one of roads per tile, sharing three materials across all tiles (the walls' windows
-// drawn by their shader, lit at night); no colliders, traffic or street furniture. A tile is fetched when the camera
-// comes within `radius` of it (further when flying high), built one per frame, and dropped once well out of range.
+// drawn by their shader, lit at night); no colliders, traffic or street furniture. A tile is fetched and built in a
+// worker (js/city-tiles-worker.js, js/city-tiles-build.js) when the camera comes within `radius` of it (further when
+// flying high), handed over as typed arrays, and dropped once well out of range.
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const hash = (a, b) => {
-  const s = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
-  return s - Math.floor(s);
-};
-
-// Building colours by type: Singapore's HDB estates in their painted pastels, factories in grey and blue steel
-const PASTELS = [0xf2efe6, 0xefe6d2, 0xdfe9ef, 0xe5efdf, 0xf3e2d4, 0xe9e1ee, 0xf4f1ea, 0xd9e4e8, 0xf0dccb];
-const INDUSTRIAL = [0xb8bcc0, 0xa6b2bd, 0xc6c6be, 0x9aa7b3];
-const CONCRETE = [0xd2cec4, 0xc8c3b8, 0xdcd8cf, 0xbfbab0];
-const HOME = new Set(['residential', 'apartments', 'house', 'terrace', 'detached', 'semidetached_house', 'dormitory', 'bungalow']);
-const WORKS = new Set(['industrial', 'warehouse', 'factory', 'manufacture', 'hangar', 'storage_tank']);
-
 const nightNode = () => smoothstep(0.35, 1.3, cityUniforms.uInteriorGlow);
 const hash1 = Fn(([x]) => fract(sin(x.mul(12.9898)).mul(43758.5453)));
 
@@ -58,137 +48,23 @@ function landMaterial() {
   return m;
 }
 
-// Decoding a tile (tools/city/tiles.mjs): buildings [rings=1, top dm, bottom dm, type, n, dx dz (dm)...] and road runs
-function decodeBuildings(B) {
-  const out = [];
-  const d = B.data;
-  let fx = 0, fz = 0;
-  for (let i = 0; i < d.length;) {
-    const rings = d[i];
-    const b = { top: d[i + 1] / 10, bottom: d[i + 2] / 10, type: B.types[d[i + 3]], pts: null };
-    i += 4;
-    for (let r = 0; r < rings; r++) {
-      const n = d[i++];
-      const pts = new Float32Array(n * 2);
-      let px = fx, pz = fz;
-      for (let k = 0; k < n; k++) {
-        px += d[i++]; pz += d[i++];
-        pts[k * 2] = px / 10; pts[k * 2 + 1] = pz / 10;
-        if (!k) { fx = px; fz = pz; }
-      }
-      if (!r) b.pts = pts;
-    }
-    out.push(b);
-  }
-  return out;
-}
-
-// A triangle on the ground (y), wound to face up
-function upTri(out, p, q, r, y) {
-  const cy = (q[1] - p[1]) * (r[0] - p[0]) - (q[0] - p[0]) * (r[1] - p[1]);
-  if (cy < 0) [q, r] = [r, q];
-  out.push(p[0], y, p[1], q[0], y, q[1], r[0], y, r[1]);
-}
-
-// One tile's meshes (positions relative to its corner)
-function buildTileGeometry(tile, materials) {
-  const walls = { pos: [], nrm: [], uv: [], col: [] };
-  const roofs = { pos: [], col: [] };
-  const color = new THREE.Color();
-  const contour = [];
-  for (const b of decodeBuildings(tile.buildings)) {
-    const pts = b.pts;
-    const n = pts.length / 2;
-    const r = hash(pts[0], pts[1]);
-    const palette = HOME.has(b.type) ? PASTELS : WORKS.has(b.type) ? INDUSTRIAL : CONCRETE;
-    color.setHex(palette[Math.floor(r * palette.length)]);
-    // walls: each edge a quad, its uv in metres along the walls (from a random start) and up from the ground
-    let along = r * 37;
-    if (b.type !== 'roof') {
-      for (let k = 0; k < n; k++) {
-        const ax = pts[k * 2], az = pts[k * 2 + 1];
-        const bx = pts[((k + 1) % n) * 2], bz = pts[((k + 1) % n) * 2 + 1];
-        const len = Math.hypot(bx - ax, bz - az);
-        if (len < 0.3) continue;
-        const nx = -(bz - az) / len, nz = (bx - ax) / len; // outward for clockwise rings
-        walls.pos.push(ax, b.bottom, az, bx, b.bottom, bz, bx, b.top, bz, ax, b.bottom, az, bx, b.top, bz, ax, b.top, az);
-        for (let v = 0; v < 6; v++) { walls.nrm.push(nx, 0, nz); walls.col.push(color.r, color.g, color.b); }
-        const u0 = along, u1 = along + len;
-        walls.uv.push(u0, b.bottom, u1, b.bottom, u1, b.top, u0, b.bottom, u1, b.top, u0, b.top);
-        along = u1;
-      }
-    }
-    // roof, a little darker
-    contour.length = 0;
-    for (let k = 0; k < n; k++) contour.push(new THREE.Vector2(pts[k * 2], pts[k * 2 + 1]));
-    const tris = THREE.ShapeUtils.triangulateShape(contour, []);
-    const shade = 0.72 + r * 0.18;
-    for (const [i0, i1, i2] of tris) {
-      const p0 = contour[i0], p1 = contour[i1], p2 = contour[i2];
-      const cross = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
-      const [q1, q2] = cross < 0 ? [p1, p2] : [p2, p1];
-      roofs.pos.push(p0.x, b.top, p0.y, q1.x, b.top, q1.y, q2.x, b.top, q2.y);
-      for (let v = 0; v < 3; v++) roofs.col.push(color.r * shade, color.g * shade, color.b * shade);
-    }
-  }
-  // main roads: a ribbon per run, its segments overlapping at the joints
-  const roads = [];
-  for (const run of tile.roads) {
-    const [, wdm, level, n] = run;
-    const w = wdm / 20;
-    const y = level ? 0.04 : -0.02;
-    let px = 0, pz = 0;
-    const P = [];
-    for (let k = 0; k < n; k++) {
-      px += run[4 + k * 2]; pz += run[5 + k * 2];
-      P.push(px / 10, pz / 10);
-    }
-    for (let k = 0; k + 1 < n; k++) {
-      const ax = P[k * 2], az = P[k * 2 + 1], bx = P[k * 2 + 2], bz = P[k * 2 + 3];
-      const len = Math.hypot(bx - ax, bz - az);
-      if (len < 0.1) continue;
-      const ux = (bx - ax) / len, uz = (bz - az) / len;
-      const ex = ux * w * 0.5, ez = uz * w * 0.5; // overlap the joints by half a width
-      const sx = -uz * w, sz = ux * w;
-      const a0 = [ax - ex + sx, az - ez + sz], a1 = [ax - ex - sx, az - ez - sz];
-      const b0 = [bx + ex + sx, bz + ez + sz], b1 = [bx + ex - sx, bz + ez - sz];
-      upTri(roads, a0, b0, b1, y);
-      upTri(roads, a0, b1, a1, y);
-    }
-  }
-
+// A built tile (js/city-tiles-build.js) as meshes, positions relative to its corner
+function tileMeshes(built, materials) {
   const group = new THREE.Group();
-  if (walls.pos.length) {
+  for (const [part, material] of [[built.walls, materials.walls], [built.roofs, materials.roofs], [built.roads, materials.roads]]) {
+    if (!part) continue;
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(walls.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(walls.nrm, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(walls.uv, 2));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(walls.col, 3));
-    g.computeBoundingSphere();
-    const mesh = new THREE.Mesh(g, materials.walls);
+    g.setAttribute('position', new THREE.BufferAttribute(part.position, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(part.normal, 3));
+    if (part.uv) g.setAttribute('uv', new THREE.BufferAttribute(part.uv, 2));
+    if (part.color) g.setAttribute('color', new THREE.BufferAttribute(part.color, 3));
+    const [x, y, z, r] = part.sphere;
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(x, y, z), r);
+    const mesh = new THREE.Mesh(g, material);
     mesh.receiveShadow = true;
     group.add(mesh);
   }
-  if (roofs.pos.length) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(roofs.pos, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(roofs.col, 3));
-    g.computeVertexNormals();
-    g.computeBoundingSphere();
-    const mesh = new THREE.Mesh(g, materials.roofs);
-    mesh.receiveShadow = true;
-    group.add(mesh);
-  }
-  if (roads.length) {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(roads, 3));
-    g.computeVertexNormals();
-    g.computeBoundingSphere();
-    const mesh = new THREE.Mesh(g, materials.roads);
-    mesh.receiveShadow = true;
-    group.add(mesh);
-  }
-  return { group, walls: walls.pos.length / 18, roofs: roofs.pos.length / 9, roads: roads.length / 18 };
+  return group;
 }
 
 // The island's land (index.json land: [[outer, ...holes]] flat x, z) as a ground just under the city's own, over a
@@ -226,8 +102,24 @@ class CityTiles {
     scene.add(this.group);
     this.materials = { walls: wallMaterial(), roofs: roofMaterial(), roads: roadMaterial() };
     this.loaded = new Map(); // key -> { group } | { pending: true }
-    this.queue = [];
+    this.queue = []; // built tiles waiting to be added, one a frame
     this.inflight = 0;
+    this.requests = new Map(); // worker request id -> { key, t }
+    this.nextId = 1;
+    // the worker fetches & builds; without one (or if it fails to start) the main thread does
+    try {
+      this.worker = new Worker(new URL('./city-tiles-worker.js', import.meta.url), { type: 'module' });
+      this.worker.onmessage = ({ data }) => this.received(data);
+      this.worker.onerror = (e) => {
+        console.warn(`[tiles] worker failed (${e.message || 'error'}): building tiles on the main thread`);
+        this.worker = null;
+        for (const { key } of this.requests.values()) this.loaded.delete(key);
+        this.requests.clear();
+        this.inflight = 0;
+      };
+    } catch {
+      this.worker = null;
+    }
     this.index = null;
     this.stats = { tiles: 0, walls: 0 };
     // a stand-in using each material, so the shaders compile behind the loading screen with the rest
@@ -275,35 +167,62 @@ class CityTiles {
     return { R, tiles: out.map(([, t]) => t) };
   }
 
+  // A tile back from the worker (or the main-thread fallback)
+  received({ id, key, t, built, error }) {
+    if (id !== undefined) {
+      const request = this.requests.get(id);
+      if (!request) return; // (the worker was replaced)
+      this.requests.delete(id);
+      ({ key, t } = request);
+    }
+    this.inflight = Math.max(0, this.inflight - 1);
+    if (error) {
+      console.warn(`[tiles] ${t.file}: ${error}`);
+      this.loaded.delete(key);
+      return;
+    }
+    // dropped while it was being built: forget it
+    if (!this.loaded.has(key)) return;
+    this.queue.push({ key, t, built });
+  }
+
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+  }
+
   update(camera) {
     if (!this.index) return;
     const { x, y, z } = camera.position;
     const { R, tiles } = this.wanted(x, y, z);
     const T = this.index.tile;
-    // fetch the nearest missing tiles, two at a time
+    // fetch & build the nearest missing tiles, a few at a time
     for (const t of tiles) {
-      if (this.inflight >= 2) break;
+      if (this.inflight >= (this.worker ? 3 : 1)) break;
       const key = `${t.i},${t.j}`;
       if (this.loaded.has(key)) continue;
       this.loaded.set(key, { pending: true });
       this.inflight++;
-      fetch(`${this.url}${t.file}`).then((r) => r.json()).then((data) => {
-        this.queue.push({ key, t, data });
-      }).catch((e) => {
-        console.warn(`[tiles] ${t.file}: ${e.message}`);
-        this.loaded.delete(key);
-      }).finally(() => { this.inflight--; });
+      const url = new URL(`${this.url}${t.file}`, location.href).href;
+      if (this.worker) {
+        const id = this.nextId++;
+        this.requests.set(id, { key, t });
+        this.worker.postMessage({ id, url });
+      } else {
+        fetch(url).then((r) => r.json()).then((data) => this.received({ key, t, built: buildTileArrays(data) }))
+          .catch((e) => this.received({ key, t, error: e.message }));
+      }
     }
-    // build at most one a frame
+    // add at most one built tile a frame (a few typed arrays: cheap)
     const job = this.queue.shift();
     if (job && this.loaded.has(job.key)) {
-      const built = buildTileGeometry(job.data, this.materials);
-      built.group.position.set(job.t.i * T, 0, job.t.j * T);
-      built.group.name = `tile_${job.key}`;
-      this.group.add(built.group);
-      this.loaded.set(job.key, { group: built.group, walls: built.walls });
+      const group = tileMeshes(job.built, this.materials);
+      group.position.set(job.t.i * T, 0, job.t.j * T);
+      group.name = `tile_${job.key}`;
+      this.group.add(group);
+      this.loaded.set(job.key, { group, walls: job.built.counts.walls });
       this.stats.tiles++;
-      this.stats.walls += built.walls;
+      this.stats.walls += job.built.counts.walls;
     }
     // drop the tiles well out of range
     for (const [key, entry] of this.loaded) {
@@ -321,4 +240,4 @@ class CityTiles {
   }
 }
 
-export { CityTiles, decodeBuildings, buildTileGeometry };
+export { CityTiles, tileMeshes };
