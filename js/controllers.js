@@ -395,7 +395,8 @@ class ThirdPersonControllerManager {
     const sinH = Math.sin(heading), cosH = Math.cos(heading);
     const shape = collisionBody(this.activeMode, radius, heading, 0.1);
     const reach = Math.max(shape.extX, shape.extZ);
-    const margin = heli ? HELI_RANGE : 0;
+    const wide = heli || !!this.onLand; // (beyond the detailed island: the helicopter, or anyone once the land is known)
+    const margin = wide ? HELI_RANGE : 0;
     const entity = this.getActiveEntity();
     // Conservative body cylinders, including the taxi's corners, bicycle wheels and helicopter tail/rotor.
     const body = { person: [0.48, 1.9], car: [2.4, 1.9], cyclist: [1.0, 1.9], helicopter: [6.2, 3.2] };
@@ -406,8 +407,13 @@ class ThirdPersonControllerManager {
     const cameraBack = Math.cos(0.09) * entity.chaseDistance;
     const cameraUp = entity.chaseHeight + Math.sin(0.09) * entity.chaseDistance * 0.85;
     const clampPoint = (px, pz) => {
-      pz = Math.max(ISLAND_BOUNDS.minZ + (heli ? -HELI_RANGE : 30), Math.min(ISLAND_BOUNDS.maxZ + margin, pz));
+      pz = Math.max(ISLAND_BOUNDS.minZ + (wide ? -HELI_RANGE : 30), Math.min(ISLAND_BOUNDS.maxZ + margin, pz));
       px = Math.max(ISLAND_BOUNDS.minX - margin, Math.min(ISLAND_BOUNDS.maxX + margin, px));
+      // the whole island once its land is known (setLand): anywhere on it, never in the water
+      if (this.onLand) {
+        if (heli) return { x: px, z: pz };
+        return this.onLand(px, pz) ? { x: px, z: pz } : null;
+      }
       if (!heli && getIslandBoundsAtZ) {
         const shore = getIslandBoundsAtZ(pz);
         const west = shore.westX + 8, east = shore.eastX - 8;
@@ -436,8 +442,8 @@ class ThirdPersonControllerManager {
     const origin = clampPoint(x, z);
     if (clear(origin)) return origin;
     // Four-metre rings cover nearby streets and courtyards, with bounded work even for a click inside a large block.
-    const cx = origin ? origin.x : Math.max(ISLAND_BOUNDS.minX, Math.min(ISLAND_BOUNDS.maxX, x));
-    const cz = origin ? origin.z : Math.max(ISLAND_BOUNDS.minZ + 30, Math.min(ISLAND_BOUNDS.maxZ, z));
+    const cx = origin ? origin.x : this.onLand ? x : Math.max(ISLAND_BOUNDS.minX, Math.min(ISLAND_BOUNDS.maxX, x));
+    const cz = origin ? origin.z : this.onLand ? z : Math.max(ISLAND_BOUNDS.minZ + 30, Math.min(ISLAND_BOUNDS.maxZ, z));
     for (let distance = 4; distance <= 256; distance += 4) {
       for (let i = 0; i < 32; i++) {
         const angle = i * Math.PI / 16;
@@ -880,6 +886,7 @@ class ThirdPersonControllerManager {
     const key = (ix, iz) => (ix + 4096) * 8192 + (iz + 4096);
     if (!this._colliderCells) {
       this._colliderCells = new Map();
+      this._nextColliderOrder = this.colliders.length;
       this.colliders.forEach((c, i) => {
         c._order = i;
         for (let ix = Math.floor(c.minX / CELL); ix <= Math.floor(c.maxX / CELL); ix++) {
@@ -912,13 +919,67 @@ class ThirdPersonControllerManager {
     return out;
   }
 
+  // The island's land beyond the detailed city (js/city-tiles.js): `onLand(x, z)`; the player may then go anywhere on
+  // it, not only the detailed area
+  setLand(onLand) {
+    this.onLand = onLand;
+  }
+
+  // Colliders added and dropped as the island's tiles stream in and out (js/city-tiles.js onTileColliders), by tile
+  setTileColliders(key, list) {
+    this.nearColliders(0, 0, 0); // (the cells exist)
+    if (!this._tileColliders) this._tileColliders = new Map();
+    const CELL = 48;
+    const cellKey = (ix, iz) => (ix + 4096) * 8192 + (iz + 4096);
+    const each = (c, fn) => {
+      for (let ix = Math.floor(c.minX / CELL); ix <= Math.floor(c.maxX / CELL); ix++) {
+        for (let iz = Math.floor(c.minZ / CELL); iz <= Math.floor(c.maxZ / CELL); iz++) fn(cellKey(ix, iz));
+      }
+    };
+    const old = this._tileColliders.get(key);
+    if (old) {
+      const gone = new Set(old);
+      for (const c of old) {
+        each(c, (k) => {
+          const cell = this._colliderCells.get(k);
+          if (!cell) return;
+          const kept = cell.filter((d) => !gone.has(d));
+          if (kept.length) this._colliderCells.set(k, kept);
+          else this._colliderCells.delete(k);
+        });
+      }
+      this._tileColliders.delete(key);
+    }
+    if (!list || !list.length) return;
+    for (const c of list) {
+      c._order = this._nextColliderOrder++;
+      each(c, (k) => {
+        let cell = this._colliderCells.get(k);
+        if (!cell) this._colliderCells.set(k, (cell = []));
+        cell.push(c);
+      });
+    }
+    this._tileColliders.set(key, list);
+  }
+
   resolveHorizontalCollision(pos, radius, carEntity = null, entity = carEntity) {
-    // The detailed island (the helicopter may roam out over the harbour & the boroughs)
+    // The detailed island (the helicopter may roam out over the harbour & the boroughs), or with the whole island's
+    // land known (setLand), anywhere on it: a step into the water goes back to the last place on land
     const heli = this.activeMode === 'helicopter';
-    const m = heli ? HELI_RANGE : 0;
+    const m = heli || this.onLand ? HELI_RANGE : 0;
     pos.x = Math.max(ISLAND_BOUNDS.minX - m, Math.min(ISLAND_BOUNDS.maxX + m, pos.x));
-    pos.z = Math.max(ISLAND_BOUNDS.minZ + (heli ? -HELI_RANGE : 30), Math.min(ISLAND_BOUNDS.maxZ + m, pos.z));
-    if (this.activeMode !== 'helicopter' && getIslandBoundsAtZ) {
+    pos.z = Math.max(ISLAND_BOUNDS.minZ + (heli || this.onLand ? -HELI_RANGE : 30), Math.min(ISLAND_BOUNDS.maxZ + m, pos.z));
+    if (!heli && this.onLand) {
+      if (this.onLand(pos.x, pos.z)) {
+        pos._landX = pos.x;
+        pos._landZ = pos.z;
+      } else if (pos._landX !== undefined) {
+        pos.x = pos._landX;
+        pos.z = pos._landZ;
+        if (carEntity && carEntity.speed) carEntity.speed *= 0.4;
+        if (carEntity) { carEntity.vx = 0; carEntity.vz = 0; }
+      }
+    } else if (this.activeMode !== 'helicopter' && getIslandBoundsAtZ) {
       const shore = getIslandBoundsAtZ(pos.z);
       const minShoreX = shore.westX + 8.0;
       const maxShoreX = shore.eastX - 8.0;

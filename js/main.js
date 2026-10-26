@@ -3,13 +3,14 @@ import { pass, mrt, output, normalView, positionView, metalness, roughness, vec2
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
-import { getLocationLabel, isTypingInField, ROADS, NYC_LANDMARKS, TELEPORT_LOCATIONS, CITY, SPAWN } from './city-config.js';
+import { getLocationLabel, isTypingInField, ROADS, NYC_LANDMARKS, TELEPORT_LOCATIONS, CITY, SPAWN, LAND_REGIONS } from './city-config.js';
 import { buildCityGrid } from './city-grid.js';
 import { buildLandmarks } from './landmarks.js';
 import { buildCityBlocks } from './buildings.js';
 import { buildOpenCityBuildings } from './open-city-buildings.js';
 import { buildSingaporeLandmarks } from './singapore-landmarks.js';
 import { CityTiles } from './city-tiles.js';
+import { createLandMask } from './city-tiles-build.js';
 import { buildStreetDetails } from './street-details.js';
 import { buildOpenCityDetails } from './open-city-details.js';
 import { createTrafficSystem, createHighwayTraffic } from './traffic.js';
@@ -151,6 +152,22 @@ async function initApp() {
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
   const controllerManager = new ThirdPersonControllerManager(scene, allColliders);
+  // With the island's tiles, the player may go anywhere on its land: the detailed city's own (2 m) inside the area it
+  // was built for, the island's (tools/city/tiles.mjs, 8 m) beyond; and bumps into the tiles' buildings as they load
+  if (cityTiles?.landMask) {
+    const detail = createLandMask(LAND_REGIONS.map((r) => [r.outer, ...r.holes].map((ring) => ring.flatMap((p) => [p.x, p.z]))), 2);
+    const core = cityTiles.index.coreRing;
+    const inCore = (x, z) => {
+      let inside = false;
+      for (let i = 0, j = core.length - 2; i < core.length; j = i, i += 2) {
+        if ((core[i + 1] > z) !== (core[j + 1] > z) && x < core[i] + ((z - core[i + 1]) * (core[j] - core[i])) / (core[j + 1] - core[i + 1])) inside = !inside;
+      }
+      return inside;
+    };
+    controllerManager.setLand((x, z) => (inCore(x, z) ? detail.at(x, z) : cityTiles.landMask.at(x, z)));
+    cityTiles.onTileColliders = (key, list) => controllerManager.setTileColliders(key, list);
+  }
+
   // Reuse teleport placement so saved players return at rest, close to their last positions. Each city keeps its own.
   const playerStateKey = CITY.open ? `${CITY.id}-player-state` : 'nyc-player-state';
   let restored = false;

@@ -123,3 +123,30 @@ test('a built tile: walls facing out, roofs and roads facing up, bounding sphere
   assert.ok(Math.abs(cx - 50) < 1e-6 && Math.abs(cy - 10) < 1e-6 && Math.abs(cz - 50) < 1e-6 && Math.abs(r - Math.hypot(10, 20, 10) / 2) < 1e-6);
   assert.equal(decodeBuildings(tile.buildings)[0].top, 20);
 });
+
+test('the land mask: inside the island, not in its lakes or the sea', async () => {
+  const { createLandMask } = await import('../js/city-tiles-build.js');
+  const island = [-100, -100, 100, -100, 100, 100, -100, 100];
+  const lake = [-20, -20, 20, -20, 20, 20, -20, 20];
+  const mask = createLandMask([[island, lake]], 2);
+  assert.equal(mask.at(50, 50), true);
+  assert.equal(mask.at(0, 0), false, 'the lake');
+  assert.equal(mask.at(150, 0), false, 'the sea');
+  assert.equal(mask.at(-99, 99), true);
+});
+
+test('a tile\'s colliders: one turned box for a building that nearly fills it, a thin one per wall otherwise', () => {
+  const enc = (pts, top) => {
+    const data = [1, top * 10, 0, 0, pts.length];
+    let px = 0, pz = 0;
+    for (const [x, z] of pts) { data.push(x * 10 - px, z * 10 - pz); px = x * 10; pz = z * 10; }
+    return data;
+  };
+  const square = [[0, 0], [0, 10], [10, 10], [10, 0]];
+  const ell = [[100, 100], [100, 140], [140, 140], [140, 130], [110, 130], [110, 100]];
+  const built = buildTileArrays({ buildings: { types: ['yes'], data: [...enc(square, 20), ...enc(ell, 12)] }, roads: [] });
+  const c = built.colliders;
+  assert.equal(c.length / 8, 1 + 6, 'the square as one box, the L by its six walls');
+  assert.deepEqual([...c.slice(0, 4)].map((v) => Math.round(Math.abs(v) * 10) / 10), [5, 5, 5, 5]);
+  assert.deepEqual([c[6], c[7]], [0, 20]);
+});

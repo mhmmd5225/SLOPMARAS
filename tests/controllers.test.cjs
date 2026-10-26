@@ -672,3 +672,40 @@ test('player clearance respects altitude and permits a ground arrival under an a
   helicopter.position.y = 1;
   assert.notDeepEqual({ ...controller.teleportActiveTo(0, 0) }, { x: 0, z: 0 }, 'a helicopter parked at street level must be avoided');
 });
+
+test('with the island\'s land known, the player goes anywhere on it and steps back out of the water', () => {
+  // land: x in [-2000, 2000] and z in [-2000, 2000], far beyond the detailed island's 500 m, less a lake at the centre
+  const onLand = (x, z) => Math.abs(x) < 2000 && Math.abs(z) < 2000 && Math.hypot(x - 1000, z - 1000) > 100;
+  const { controller, ent } = teleportHarness('car');
+  controller.setLand(onLand);
+  assert.deepEqual({ ...controller.teleportActiveTo(1500, -1500, 0) }, { x: 1500, z: -1500 }, 'beyond the detailed island');
+  // driving on: kept, then into the lake: back to the last place on land, slowed
+  ent.speed = 20;
+  ent.position.x = 1000; ent.position.z = 850;
+  controller.resolveHorizontalCollision(ent.position, 1.35, ent);
+  assert.deepEqual([ent.position.x, ent.position.z], [1000, 850]);
+  ent.position.z = 950;
+  controller.resolveHorizontalCollision(ent.position, 1.35, ent);
+  assert.deepEqual([ent.position.x, ent.position.z], [1000, 850], 'out of the lake');
+  assert.equal(ent.speed, 8);
+  // a teleport into the water lands on the shore nearby
+  const shore = controller.teleportActiveTo(1000, 1000, 0);
+  assert.ok(onLand(shore.x, shore.z) && Math.hypot(shore.x - 1000, shore.z - 1000) < 120);
+});
+
+test('island tiles\' colliders come and go with their tiles', () => {
+  const { controller, ent } = teleportHarness('person');
+  controller.setLand(() => true);
+  const box = { minX: 1490, maxX: 1510, minZ: -10, maxZ: 10, minY: 0, maxY: 40, obb: { cx: 1500, cz: 0, hx: 10, hz: 10, cs: 1, sn: 0 } };
+  controller.setTileColliders('1,0', [box]);
+  assert.ok(controller.nearColliders(1500, 0, 5).includes(box));
+  ent.position.x = 1488; ent.position.z = 0;
+  ent.position.x += 2; // a step into the building
+  controller.resolveHorizontalCollision(ent.position, 0.48);
+  assert.ok(ent.position.x <= 1490 - 0.48 + 1e-6, `pushed back out (${ent.position.x})`);
+  controller.setTileColliders('1,0', null);
+  assert.equal(controller.nearColliders(1500, 0, 5).length, 0, 'dropped with its tile');
+  ent.position.x = 1495;
+  controller.resolveHorizontalCollision(ent.position, 0.48);
+  assert.equal(ent.position.x, 1495);
+});

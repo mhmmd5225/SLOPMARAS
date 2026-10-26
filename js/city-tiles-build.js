@@ -2,8 +2,12 @@
 // One island tile's geometry as plain typed arrays (tools/city/tiles.mjs writes the tiles), with no three.js: run in
 // js/city-tiles-worker.js so building a tile never stalls a frame, or on the main thread where workers aren't available.
 // buildTileArrays(tile) -> { walls, roofs, roads } each { position, normal, uv?, color?, sphere: [x, y, z, r] } or null,
-// and `outlines` { pts (x, z), offsets (building k's points are offsets[k]..offsets[k + 1]), tops } for the maps;
-// positions relative to the tile's corner. Their arrays are transferable.
+// `outlines` { pts (x, z), offsets (building k's points are offsets[k]..offsets[k + 1]), tops } for the maps, and
+// `colliders` [cx, cz, hx, hz, ux, uz, minY, maxY] per oriented box for the player (as js/open-city-buildings.js's:
+// one box turned to a building where it nearly fills it, else a thin one along each wall); positions relative to the
+// tile's corner. Their arrays are transferable.
+// createLandMask(land) -> { at(x, z) } the island's land (index.json land: [[outer, ...holes]]) for the player to keep
+// to, by scanlines.
 
 // Building colours by type: Singapore's HDB estates in their painted pastels, factories in grey and blue steel
 const PASTELS = [0xf2efe6, 0xefe6d2, 0xdfe9ef, 0xe5efdf, 0xf3e2d4, 0xe9e1ee, 0xf4f1ea, 0xd9e4e8, 0xf0dccb];
@@ -97,6 +101,101 @@ function upTri(out, p, q, r, y) {
   out.push(p[0], y, p[1], q[0], y, q[1], r[0], y, r[1]);
 }
 
+// The smallest box turned to one of the ring's edges holding it: { cx, cz, hx, hz, ux, uz, area }
+function orientedBox(pts) {
+  const n = pts.length / 2;
+  let best = null;
+  const step = Math.max(1, Math.floor(n / 24));
+  for (let i = 0; i < n; i += step) {
+    const j = (i + 1) % n;
+    let ux = pts[j * 2] - pts[i * 2];
+    let uz = pts[j * 2 + 1] - pts[i * 2 + 1];
+    const L = Math.hypot(ux, uz);
+    if (L < 0.5) continue;
+    ux /= L;
+    uz /= L;
+    let a0 = Infinity, a1 = -Infinity, b0 = Infinity, b1 = -Infinity;
+    for (let k = 0; k < n; k++) {
+      const x = pts[k * 2], z = pts[k * 2 + 1];
+      const a = x * ux + z * uz, c = -x * uz + z * ux;
+      if (a < a0) a0 = a;
+      if (a > a1) a1 = a;
+      if (c < b0) b0 = c;
+      if (c > b1) b1 = c;
+    }
+    const area = (a1 - a0) * (b1 - b0);
+    if (!best || area < best.area) {
+      const ca = (a0 + a1) / 2, cb = (b0 + b1) / 2;
+      best = { cx: ca * ux - cb * uz, cz: ca * uz + cb * ux, hx: (a1 - a0) / 2, hz: (b1 - b0) / 2, ux, uz, area };
+    }
+  }
+  return best;
+}
+
+function ringArea(pts) {
+  let a = 0;
+  const n = pts.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) a += pts[j * 2] * pts[i * 2 + 1] - pts[i * 2] * pts[j * 2 + 1];
+  return a / 2;
+}
+
+// A building's colliders, pushed onto `out` as [cx, cz, hx, hz, ux, uz, minY, maxY]
+function buildingColliders(b, out) {
+  if (b.type === 'roof' || b.bottom > 3.5) return; // canopies, and parts clearing even a bus
+  const pts = b.pts;
+  const box = orientedBox(pts);
+  if (box && Math.abs(ringArea(pts)) > box.area * 0.85) {
+    out.push(box.cx, box.cz, box.hx, box.hz, box.ux, box.uz, b.bottom, b.top);
+    return;
+  }
+  const n = pts.length / 2;
+  for (let k = 0; k < n; k++) {
+    const ax = pts[k * 2], az = pts[k * 2 + 1];
+    const bx = pts[((k + 1) % n) * 2], bz = pts[((k + 1) % n) * 2 + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    if (len < 0.4) continue;
+    const ux = (bx - ax) / len, uz = (bz - az) / len;
+    out.push((ax + bx) / 2 + uz * 0.4, (az + bz) / 2 - ux * 0.4, len / 2, 0.4, ux, uz, b.bottom, b.top);
+  }
+}
+
+// The island's land for the player to keep to: every `step` m of z, the sorted x where the land's rings (outer & holes)
+// cross it; a point is on land where an odd number of crossings lie west of it
+function createLandMask(land, step = 4) {
+  let z0 = Infinity, z1 = -Infinity;
+  const rings = land.flat();
+  for (const r of rings) for (let k = 1; k < r.length; k += 2) { z0 = Math.min(z0, r[k]); z1 = Math.max(z1, r[k]); }
+  if (!Number.isFinite(z0)) return { at: () => false, rows: 0 };
+  const n = Math.floor((z1 - z0) / step) + 1;
+  const rows = Array.from({ length: n }, () => []);
+  for (const r of rings) {
+    const m = r.length / 2;
+    for (let i = 0, j = m - 1; i < m; j = i++) {
+      const ax = r[j * 2], az = r[j * 2 + 1], bx = r[i * 2], bz = r[i * 2 + 1];
+      if (az === bz) continue;
+      const lo = Math.min(az, bz), hi = Math.max(az, bz);
+      for (let k = Math.max(0, Math.ceil((lo - z0) / step - 0.5)); k < n; k++) {
+        const z = z0 + (k + 0.5) * step;
+        if (z >= hi) break;
+        if (z < lo) continue;
+        rows[k].push(ax + ((z - az) * (bx - ax)) / (bz - az));
+      }
+    }
+  }
+  const sorted = rows.map((xs) => Float64Array.from(xs).sort());
+  return {
+    rows: n,
+    at(x, z) {
+      const k = Math.floor((z - z0) / step);
+      if (k < 0 || k >= n) return false;
+      const xs = sorted[k];
+      let lo = 0, hi = xs.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (xs[mid] < x) lo = mid + 1; else hi = mid; }
+      return (lo & 1) === 1;
+    }
+  };
+}
+
 function buildTileArrays(tile) {
   const walls = { pos: [], nrm: [], uv: [], col: [] };
   const roofs = { pos: [], col: [] };
@@ -111,7 +210,9 @@ function buildTileArrays(tile) {
     outlines.offsets[k + 1] = outlines.offsets[k] + b.pts.length / 2;
     outlines.tops[k] = b.top;
   });
+  const colliders = [];
   for (const b of buildings) {
+    buildingColliders(b, colliders);
     const pts = b.pts;
     const n = pts.length / 2;
     const r = hash(pts[0], pts[1]);
@@ -184,6 +285,7 @@ function buildTileArrays(tile) {
     roofs: pack(roofs.pos, (count) => ({ normal: up(count), color: new Float32Array(roofs.col) })),
     roads: pack(roads, (count) => ({ normal: up(count) })),
     outlines,
+    colliders: new Float32Array(colliders),
     counts: { walls: walls.pos.length / 18, roofs: roofs.pos.length / 9, roads: roads.length / 18 }
   };
 }
@@ -196,7 +298,8 @@ function transferables(built) {
     for (const k of ['position', 'normal', 'uv', 'color']) if (part[k]) list.push(part[k].buffer);
   }
   if (built.outlines) for (const k of ['pts', 'offsets', 'tops']) list.push(built.outlines[k].buffer);
+  if (built.colliders) list.push(built.colliders.buffer);
   return list;
 }
 
-export { buildTileArrays, decodeBuildings, triangulate, transferables };
+export { buildTileArrays, decodeBuildings, triangulate, transferables, createLandMask };

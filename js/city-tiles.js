@@ -1,13 +1,14 @@
 import * as THREE from 'three/webgpu';
 import { Fn, uv, float, vec3, mix, step, fract, floor, sin, smoothstep, attribute, positionWorld, positionView } from 'three/tsl';
 import { cityUniforms } from './tsl-materials.js';
-import { buildTileArrays } from './city-tiles-build.js';
+import { buildTileArrays, createLandMask } from './city-tiles-build.js';
 
 // js/city-tiles.js
 // The rest of the island beyond the detailed city: its land, and its buildings and main roads streamed in tiles around
 // the camera (tools/city/tiles.mjs writes tiles/<city>/index.json and a JSON file per tile). Kept cheap: one merged
 // mesh of walls, one of roofs and one of roads per tile, sharing three materials across all tiles (the walls' windows
-// drawn by their shader, lit at night); no colliders, traffic or street furniture. A tile is fetched and built in a
+// drawn by their shader, lit at night), its buildings' collision boxes for the player (onTileColliders), no traffic or
+// street furniture. A tile is fetched and built in a
 // worker (js/city-tiles-worker.js, js/city-tiles-build.js) when the camera comes within `radius` of it (further when
 // flying high), handed over as typed arrays, and dropped once well out of range.
 
@@ -46,6 +47,19 @@ function landMaterial() {
   const n = sin(p.x.mul(0.0071).add(sin(p.y.mul(0.0053)).mul(2.1))).mul(sin(p.y.mul(0.0067).add(sin(p.x.mul(0.0047)).mul(1.7))));
   m.colorNode = mix(vec3(0.33, 0.42, 0.26), vec3(0.5, 0.5, 0.47), smoothstep(-0.2, 0.5, n));
   return m;
+}
+
+// A tile's collision boxes ([cx, cz, hx, hz, ux, uz, minY, maxY] relative to its corner at ox, oz) as the player's
+// colliders (js/controllers.js: world bounds and the oriented box, as js/open-city-buildings.js's obbCollider)
+function tileColliders(boxes, ox, oz) {
+  const out = [];
+  for (let i = 0; i < boxes.length; i += 8) {
+    const cx = ox + boxes[i], cz = oz + boxes[i + 1], hx = boxes[i + 2], hz = boxes[i + 3], ux = boxes[i + 4], uz = boxes[i + 5];
+    const ex = Math.abs(ux) * hx + Math.abs(uz) * hz;
+    const ez = Math.abs(uz) * hx + Math.abs(ux) * hz;
+    out.push({ minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez, minY: boxes[i + 6], maxY: boxes[i + 7], obb: { cx, cz, hx, hz, cs: ux, sn: -uz } });
+  }
+  return out;
 }
 
 // A built tile (js/city-tiles-build.js) as meshes, positions relative to its corner
@@ -122,8 +136,11 @@ class CityTiles {
     }
     this.index = null;
     this.stats = { tiles: 0, walls: 0 };
-    // called with (tile corner x, z, outlines) as each tile is added (the maps draw its buildings)
+    // called with (key, tile corner x, z, outlines) as each tile is added (the maps draw its buildings), with (key,
+    // colliders) as it's added and (key, null) as it's dropped (the player bumps into its buildings)
     this.onTileOutlines = null;
+    this.onTileColliders = null;
+    this.landMask = null; // the island's land (createLandMask), once the index arrives
     // a stand-in using each material, so the shaders compile behind the loading screen with the rest
     const stand = new THREE.BufferGeometry();
     stand.setAttribute('position', new THREE.Float32BufferAttribute([0, -50, 0, 1, -50, 0, 0, -50, 1], 3));
@@ -146,6 +163,7 @@ class CityTiles {
     this.land = buildLand(this.index.land, landMaterial(), seawall);
     this.group.add(this.land);
     this.byKey = new Map(this.index.tiles.map((t) => [`${t.i},${t.j}`, t]));
+    this.landMask = createLandMask(this.index.land);
     console.info(`[tiles] ${this.index.tiles.length} island tiles of ${this.index.tile} m (${this.index.tiles.reduce((n, t) => n + t.buildings, 0)} buildings)`);
     return true;
   }
@@ -226,6 +244,7 @@ class CityTiles {
       this.stats.tiles++;
       this.stats.walls += job.built.counts.walls;
       if (this.onTileOutlines && job.built.outlines) this.onTileOutlines(job.key, job.t.i * T, job.t.j * T, job.built.outlines);
+      if (this.onTileColliders && job.built.colliders) this.onTileColliders(job.key, tileColliders(job.built.colliders, job.t.i * T, job.t.j * T));
     }
     // drop the tiles well out of range
     for (const [key, entry] of this.loaded) {
@@ -234,6 +253,7 @@ class CityTiles {
       const d = Math.hypot(clamp(x, t.i * T, (t.i + 1) * T) - x, clamp(z, t.j * T, (t.j + 1) * T) - z);
       if (d > R + T) {
         this.group.remove(entry.group);
+        if (this.onTileColliders) this.onTileColliders(key, null);
         for (const mesh of entry.group.children) mesh.geometry.dispose();
         this.loaded.delete(key);
         this.stats.tiles--;
@@ -243,4 +263,4 @@ class CityTiles {
   }
 }
 
-export { CityTiles, tileMeshes };
+export { CityTiles, tileMeshes, tileColliders };
