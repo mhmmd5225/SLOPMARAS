@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadCity, dataDir } from './config.mjs';
+import { fetchTerrain } from './terrain.mjs';
 
 // The Overpass queries of a city's layers, over its detail box grown by its margin
 export function queries(city) {
@@ -133,6 +134,13 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       console.log(`[fetch] trees from ${city.trees.url || city.trees.source} ...`);
       try { fs.writeFileSync(out, await fetchTrees(city, dir)); console.log(`[fetch] trees: wrote ${out}`); } catch (e) { console.error(`[fetch] trees: ${e.message}`); failed++; }
     }
+  }
+  if (city.terrain) {
+    console.log('[fetch] terrain tiles ...');
+    try {
+      const { got, had } = await fetchTerrain(city, dir, { force });
+      console.log(`[fetch] terrain: ${got} tiles downloaded, ${had} already there`);
+    } catch (e) { console.error(`[fetch] terrain: ${e.message}`); failed++; }
   }
   for (const [layer, ql] of Object.entries(queries(city))) {
     const q = path.join(dir, `q_${layer}.overpassql`);

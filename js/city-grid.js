@@ -48,6 +48,7 @@ import {
   createCurbMaterial,
   createWaterMaterial,
   createParkLawnMaterial,
+  createRegionGroundMaterial,
   cityUniforms,
   createParkPavingMaterial,
   createIronFenceMaterial,
@@ -60,6 +61,7 @@ import {
   createTunnelShadeMaterial
 } from './tsl-materials.js';
 import { GEO } from './geodata.js';
+import { createRegionGround } from './terrain.js';
 
 // Live construction data consumed by the building and street-detail builders after buildCityGrid().
 let centralParkClearings;
@@ -2581,16 +2583,23 @@ function buildOpenCityGrid(scene) {
   const addFootprint = (x, z, w, d) => footprints.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
 
   const waterMat = createWaterMaterial();
-  const waterGeo = new THREE.PlaneGeometry(60000, 60000, 1, 1);
-  waterGeo.rotateX(-Math.PI / 2);
-  const water = new THREE.Mesh(waterGeo, waterMat);
-  water.position.set(0, ISLAND_BOUNDS.waterLevel, 0);
-  group.add(water);
+  // A city with its ground's heights (terrain.js) stands among the region's hills and mountains instead of on the sea:
+  // their ground runs from the edge of the city's land out to the horizon
+  const regionGround = createRegionGround(createRegionGroundMaterial(), (x, z) => LAND_REGIONS.some((r) => pointInPolygonXZ(r.outer, x, z)));
+  if (regionGround) {
+    group.add(regionGround);
+  } else {
+    const waterGeo = new THREE.PlaneGeometry(60000, 60000, 1, 1);
+    waterGeo.rotateX(-Math.PI / 2);
+    const water = new THREE.Mesh(waterGeo, waterMat);
+    water.position.set(0, ISLAND_BOUNDS.waterLevel, 0);
+    group.add(water);
+  }
 
   const seawallMat = new THREE.MeshStandardNodeMaterial({ color: 0x5c5a55, roughness: 0.82, metalness: 0.1 });
   const roadMat = createRoadSurfaceMaterial();
   for (const region of LAND_REGIONS) {
-    group.add(createRegionMesh(region, -2.35, 2.31, seawallMat));
+    if (!regionGround) group.add(createRegionMesh(region, -2.35, 2.31, seawallMat)); // (the seawall: none inland)
     group.add(createRegionMesh(region, 0.0, 0, roadMat));
   }
 

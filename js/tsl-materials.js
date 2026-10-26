@@ -64,6 +64,7 @@ import {
   LONG_ISLAND_POLYGONS,
   streetZ
 } from './city-config.js';
+import { deckY } from './terrain.js';
 
 // js/tsl-materials.js
 // Photorealistic TSL (Three.js Shading Language) procedural shaders for Three.js r186 WebGPURenderer
@@ -173,8 +174,9 @@ const canyonSkyAONode = Fn(() => {
   const inParkZ = smoothstep(cp.minZ - 10.0, cp.minZ + 30.0, wp.z).mul(float(1.0).sub(smoothstep(cp.maxZ - 30.0, cp.maxZ + 10.0, wp.z)));
   const inPark = inParkX.mul(inParkZ);
 
-  const heightOpenness = smoothstep(0.0, 68.0, wp.y);
-  const streetCrevice = smoothstep(0.0, 7.5, wp.y).mul(0.22).add(0.78);
+  const y = deckY(wp); // (above the street: the ground under it, terrain.js)
+  const heightOpenness = smoothstep(0.0, 68.0, y);
+  const streetCrevice = smoothstep(0.0, 7.5, y).mul(0.22).add(0.78);
   const canyonAO = mix(float(0.44), float(1.0), heightOpenness).mul(streetCrevice);
   return mix(canyonAO, float(1.0), inPark);
 });
@@ -446,7 +448,7 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0) {
     uCoord = gridU.mul(bayWidth);
   }
 
-  const vCoord = positionWorld.y;
+  const vCoord = deckY(positionWorld); // storeys count from the street (the ground under it, terrain.js)
   const gridV = vCoord.div(floorHeight);
   const cellId = vec2(floor(gridU), floor(gridV));
   const cellUV = vec2(fract(gridU), fract(gridV));
@@ -2723,6 +2725,39 @@ function createParkLawnMaterial(isMeadow = false) {
 }
 
 /**
+ * The region's open ground around a city on its terrain (terrain.js createRegionGround): the dry Anatolian steppe
+ * and fields of the valley floors in olive and straw patches, scrub darkening the hillsides, bare limestone where the
+ * slopes are steep or the mountains high. Heights are metres above the city's origin (positionWorld.y)
+ */
+function createRegionGroundMaterial() {
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.95 });
+  const cField = color(0x7f8a45);
+  const cStraw = color(0xa59a62);
+  const cScrub = color(0x56603a);
+  const cRock = color(0x9a9282);
+  mat.colorNode = Fn(() => {
+    const wp = positionWorld.xz;
+    // each band of detail fades to its mean before a pixel spans its period (far off it would only alias to speckle)
+    const camDist = length(positionWorld.sub(cameraPosition));
+    const fieldDetail = smoothstep(6000.0, 1500.0, camDist);
+    const grain = smoothstep(500.0, 120.0, camDist);
+    const fields = noise2D(wp.mul(0.004)).mul(0.6).add(mix(float(0.5), noise2D(wp.mul(0.02)), fieldDetail).mul(0.4));
+    const valley = mix(cField, cStraw, smoothstep(0.35, 0.7, fields));
+    const steep = smoothstep(0.97, 0.86, normalWorldGeometry.y);
+    const high = smoothstep(500.0, 1100.0, positionWorld.y.add(noise2D(wp.mul(0.003)).mul(220.0)));
+    const hill = mix(valley, cScrub, smoothstep(0.995, 0.95, normalWorldGeometry.y).mul(0.8));
+    const ground = mix(hill, cRock, max(steep.mul(0.85), high));
+    return ground.mul(mix(float(0.5), noise2D(wp.mul(0.15)), grain).mul(0.12).add(0.94));
+  })();
+  mat.setupSpecular = function () {
+    specularColor.assign(vec3(0.02));
+    specularColorBlended.assign(vec3(0.02));
+    specularF90.assign(0.25);
+  };
+  return mat;
+}
+
+/**
  * Synthesizes a 256x256 procedural domain-warped multi-octave turbulent smoke/steam cloud texture
  * for camera-facing SpriteNodeMaterial particles (following webgpu_particles.html):
  * - R: local 3D cloud billow illumination (top-left warm sun catch)
@@ -3040,6 +3075,7 @@ export {
   createBillboardMaterial,
   createWaterMaterial,
   createParkLawnMaterial,
+  createRegionGroundMaterial,
   createSteamMaterial,
   createGodRayMaterial,
   createContactShadowMaterial,

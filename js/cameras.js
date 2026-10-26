@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { bryantParkLawn } from './landmarks.js';
+import { heightAt } from './terrain.js';
 
 // js/cameras.js
 // Multi-camera system supporting Third-Person Chase (with mouse/touch orbit + zoom),
@@ -41,6 +42,7 @@ class CameraSystem {
 
     this.currentPos = new THREE.Vector3(0, 10, 380);
     this.currentLookAt = new THREE.Vector3(0, 8, 440);
+    this._lookAt = new THREE.Vector3();
     this.initialized = false;
 
     // Follow cameras (chase / action) are smoothed relative to the followed entity, see update()
@@ -430,8 +432,14 @@ class CameraSystem {
       this.currentLookAt.lerp(desiredLook, k);
     }
 
+    // The camera works on the flat plane the simulation runs on; the drawn city stands on the ground (terrain.js), so
+    // the camera and what it looks at each rise by the ground under them: the same height above it as on the flat,
+    // and a slope ahead tilts the view up or down with the street
     this.camera.position.copy(this.currentPos);
-    this.camera.lookAt(this.currentLookAt);
+    this.camera.position.y += heightAt(this.currentPos.x, this.currentPos.z);
+    this._lookAt.copy(this.currentLookAt);
+    this._lookAt.y += heightAt(this.currentLookAt.x, this.currentLookAt.z);
+    this.camera.lookAt(this._lookAt);
     // the cockpit's lean (rolled about the view axis)
     if (this.activePresetId === 'taxi' && this.taxi.roll && this.camera.rotateZ) this.camera.rotateZ(this.taxi.roll);
   }

@@ -66,6 +66,11 @@ export default {
     shape: 'plane',
     parkSpacing: 14 // m between the trees scattered over a park (on average)
   },
+  // The ground (tools/city/terrain.mjs): Maraş climbs the foot of Ahır Dağı, from ~500 m at the station to ~700 m on the
+  // northern streets, the Kale on its mound. Heights from AWS's Terrarium tiles: the city's at zoom 14 on a 30 m grid
+  // (the radar's own resolution; blurred 25 m to smooth its buildings out of the ground), the region's at zoom 12 on a 100 m grid out to
+  // the mountains on the horizon (region: [south, west, north, east])
+  terrain: { zoom: 14, cell: 30, smooth: 25, region: [37.46, 36.77, 37.71, 37.08], regionZoom: 12, regionCell: 100, regionSmooth: 60 },
   // Vehicle liveries (js/city-common.js NYC_VEHICLES, overridden part by part): Turkey's yellow taxis with the black
   // TAKSİ lettering and Kahramanmaraş (46) plates, white with the blue TR band; the municipality's white and red buses
   vehicles: {

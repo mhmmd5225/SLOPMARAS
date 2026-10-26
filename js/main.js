@@ -22,6 +22,7 @@ import { CameraSystem, CAMERA_PRESETS } from './cameras.js';
 import { LightingSystem } from './lighting.js';
 import { NYCMapSystem } from './nyc-map.js';
 import { setupSceneCulling, updateSceneCulling } from './scene-culling.js';
+import { HAS_TERRAIN, bakeTerrain, liftMaterials, collectLights, liftLights } from './terrain.js';
 import { CityAudioSystem } from './audio-system.js';
 import { Weather } from './weather.js';
 import { Navigator } from './navigation.js';
@@ -255,10 +256,21 @@ async function initApp() {
 
   // Island-wide static geometry: chunk & distance-cull the small props, shadow stand-ins for the big casters
   // (scene-culling.js)
+  // A city on its ground's heights (terrain.js): the static city is raised onto the ground once, here, before the
+  // culling cuts it into cells and shadow stand-ins; what moves is raised in its vertex stage (below)
+  const terrainStats = bakeTerrain(['CityGrid', 'CityBuildings', 'CityStreetDetails', 'RoadMarkings'].map((name) => scene.getObjectByName(name)).filter(Boolean));
+  if (HAS_TERRAIN) console.info(`[terrain] baked ${terrainStats.meshes} meshes (+${terrainStats.triangles} triangles cut along the ground's), ${terrainStats.instanced} instanced meshes & ${terrainStats.lights} lamps in ${terrainStats.ms} ms; ${terrainStats.heavy.join(', ')}`);
+  markInit('terrain');
+
   const cullingRoots = ['ManhattanCityGrid', 'CityGrid', 'ManhattanCityBlocks', 'ManhattanStreetDetails', 'ManhattanLandmarks', 'Boroughs']
     .map((name) => scene.getObjectByName(name))
     .filter(Boolean);
   setupSceneCulling(scene, cullingRoots, lightingSystem.sunLight.shadow);
+  // ...and everything else (traffic, people, the player, the signals) rides the ground in its vertex stage; the moving
+  // lamps are raised each frame (the loop)
+  const liftedMaterials = liftMaterials(scene);
+  const movingLamps = collectLights([scene]);
+  if (HAS_TERRAIN) console.info(`[terrain] ${liftedMaterials} materials lifted in their vertex stage, ${movingLamps.length} moving lamps`);
 
   // Initialize static world matrices once, including the chunks and shadow proxies created above.
   // Crowd, tree and building-detail animation changes instance/pose buffers, not Object3D transforms.
@@ -872,6 +884,7 @@ async function initApp() {
     audioSystem.update(dt, elapsed, cameraSystem.camera, lightingSystem.activePresetId === 'midnight');
     if (warmedUp) updateSceneCulling(cameraSystem.camera.position); // the warm-up frame draws every chunk
     // Traffic collisions can move the player after controller updates; finalize moving hierarchies here.
+    liftLights(movingLamps);
     for (const root of dynamicRoots) root.updateMatrixWorld();
 
     // Render frame via TSL RenderPipeline (SSR + Bloom)
