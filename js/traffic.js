@@ -31,7 +31,7 @@ import {
 // - Fixed-size local populations replenish distant roads and sidewalks in every direction, protecting the near view.
 // - The player's vehicle or character pushes and is pushed by the traffic (SAT contact, impulses, sparks).
 
-const NUM_CARS = 200;
+const NUM_CARS = 140; // (200 jammed the streets around the player)
 const NUM_BUSES = 12;
 
 // Intelligent Driver Model: max acceleration, comfortable braking, time headway, standstill gap; and the sideways
@@ -1789,7 +1789,7 @@ function createHighwayTraffic(scene, lanes) {
   let seed = 20240917;
   const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 
-  // Lanes: arc length and heading at every centre-line vertex, bounds for the player test, cars every 24-74 m
+  // Lanes: arc length and heading at every centre-line vertex, bounds for the player test, cars every 34-94 m
   const cars = [];
   const counts = { taxi: 0, sedan: 0, suv: 0 };
   for (const lane of lanes) {
@@ -1805,7 +1805,7 @@ function createHighwayTraffic(scene, lanes) {
     lane.box = [Infinity, -Infinity, Infinity, -Infinity];
     for (const p of P) lane.box = [Math.min(lane.box[0], p.x), Math.max(lane.box[1], p.x), Math.min(lane.box[2], p.z), Math.max(lane.box[3], p.z)];
     lane.cars = [];
-    for (let u = rand() * 30; u < lane.len - 12; u += 24 + rand() * 50) {
+    for (let u = rand() * 30; u < lane.len - 12; u += 34 + rand() * 60) {
       const h = rand();
       const kind = h < 0.20 ? 'taxi' : h < 0.65 ? 'sedan' : 'suv';
       const col = new THREE.Color(PALETTES[kind][Math.floor(rand() * PALETTES[kind].length)]);

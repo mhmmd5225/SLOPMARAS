@@ -26,6 +26,9 @@ const CORNERING = 10.5;
 const MAX_LOCK = 0.6;
 const maxSteerAt = (v) => Math.atan((WHEELBASE * CORNERING) / Math.max(v * v, (WHEELBASE * CORNERING) / Math.tan(MAX_LOCK)));
 const MAX_CURVATURE = Math.tan(MAX_LOCK) / WHEELBASE;
+const GRIP = 9.5;
+// how far ahead of the car's steering and yaw lag the controller looks by default (s)
+const STEER_LAG = 0.1;
 const CAR_HALF_L = 2.2;
 const CAR_HALF_W = 0.9;
 
@@ -35,13 +38,16 @@ const DRIVERS = {
     id: 'self', label: 'Self-driving', auto: true, offRoute: 14,
     cruise: 13.9, // 50 km/h, Singapore's default urban limit
     aLat: 2.0, brake: 2.6, hardBrake: 7, gap0: 4.0, gapTime: 1.3, margin: 0.45,
-    signals: true, peds: true, lookahead: [4.5, 0.42], turnPenalty: 8, signalPenalty: 12
+    signals: true, peds: true,
+    // steering (drive(), step 3): tuned against controllers.js updateCar in tests/navigation.test.cjs
+    steerLag: 0.1, steerPreview: 1.4, steerHeading: 1.4, steerCross: 1.6, curveWindow: [0], turnPenalty: 8, signalPenalty: 12
   },
   crazy: {
     id: 'crazy', label: 'Crazy Taxi', auto: true, offRoute: 20,
     cruise: 34,
     aLat: 8.0, brake: 7.0, hardBrake: 9, gap0: 1.2, gapTime: 0.25, margin: 0.15,
-    signals: false, peds: false, lookahead: [5, 0.5], turnPenalty: 14, signalPenalty: 0
+    signals: false, peds: false,
+    steerLag: 0.1, steerPreview: 2.5, steerHeading: 1.4, steerCross: 0.8, curveWindow: [0], turnPenalty: 14, signalPenalty: 0
   }
 };
 
@@ -266,7 +272,7 @@ function buildPath(network, route, x, z, driver = DRIVERS.self) {
   const add = (px, pz, edge = null, lane = 0) => {
     const last = pts[pts.length - 1];
     if (last && Math.hypot(px - last.x, pz - last.z) < 0.4) return;
-    pts.push({ x: px, z: pz, s: 0, tx: 0, tz: 1, nx: 1, nz: 0, k: 0, v: 0, edge, lane });
+    pts.push({ x: px, z: pz, s: 0, tx: 0, tz: 1, nx: 1, nz: 0, k: 0, ks: 0, v: 0, edge, lane });
   };
   add(x, z);
   const { edges, moves } = route;
@@ -293,8 +299,9 @@ function buildPath(network, route, x, z, driver = DRIVERS.self) {
     const oA = e.lanes[entry] ?? 0;
     const oB = e.lanes[exit] ?? 0;
     const span = Math.max(0, sB - sA);
-    // lane change: 14 m a lane, over at most three quarters of what's left of the edge, starting soon
-    const lc = Math.abs(oB - oA) < 0.1 ? 0 : Math.min(span * 0.75, 6 + 4 * Math.abs(oB - oA));
+    // lane change: 10 m per metre across (36 m a lane, a gentle 1.4 m/s² at 50 km/h), over at most three quarters of what
+    // is left of the edge, starting soon
+    const lc = Math.abs(oB - oA) < 0.1 ? 0 : Math.min(span * 0.75, 10 * Math.abs(oB - oA));
     const c0 = sA + Math.min(first ? 6 : 2, span * 0.15);
     const c1 = c0 + lc;
     const lane = (s) => (lc <= 0 || s <= c0 ? (s <= c0 ? oA : oB) : s >= c1 ? oB : oA + (oB - oA) * smooth((s - c0) / lc));
@@ -335,8 +342,10 @@ function buildPath(network, route, x, z, driver = DRIVERS.self) {
     while (i0 > 0 && pts[i].s - pts[i0].s < 3) i0--;
     while (i1 < pts.length - 1 && pts[i1].s - pts[i].s < 3) i1++;
     const ds = pts[i1].s - pts[i0].s;
-    const turn = Math.abs(wrapAngle(Math.atan2(pts[i1].tx, pts[i1].tz) - Math.atan2(pts[i0].tx, pts[i0].tz)));
-    pts[i].k = ds > 0.5 ? turn / ds : 0;
+    // (signed: positive turning left, the way the heading grows)
+    const turn = wrapAngle(Math.atan2(pts[i1].tx, pts[i1].tz) - Math.atan2(pts[i0].tx, pts[i0].tz));
+    pts[i].ks = ds > 0.5 ? turn / ds : 0;
+    pts[i].k = Math.abs(pts[i].ks);
   }
   const path = { pts, maneuvers, stops, length: pts.length ? pts[pts.length - 1].s : 0, route };
   for (const mv of maneuvers) {
@@ -381,8 +390,10 @@ function pointAt(path, s, off = 0, out = {}) {
   out.x = a.x + (b.x - a.x) * t + (a.nx + (b.nx - a.nx) * t) * off;
   out.z = a.z + (b.z - a.z) * t + (a.nz + (b.nz - a.nz) * t) * off;
   out.v = a.v + (b.v - a.v) * t;
-  out.tx = a.tx;
-  out.tz = a.tz;
+  out.vMin = Math.min(a.v, b.v); // (a speed limit holds until the point that lifts it)
+  out.tx = a.tx + (b.tx - a.tx) * t;
+  out.tz = a.tz + (b.tz - a.tz) * t;
+  out.ks = a.ks + (b.ks - a.ks) * t;
   return out;
 }
 
@@ -483,6 +494,7 @@ class Navigator {
     this.nearMissSeen = new WeakMap();
     this.nextFareAt = 0;
     this._pt = {};
+    this._pk = {};
   }
 
   get active() { return Boolean(this.destination); }
@@ -762,7 +774,8 @@ class Navigator {
     }
 
     // 1. Speed: the path's profile (a little ahead, so curves are met slowed down), then whatever is in the way
-    let vTarget = pointAt(path, s + speed * 0.35, 0, this._pt).v;
+    let vTarget = Infinity;
+    for (let ahead = 0; ahead <= speed * 0.5 + 2; ahead += 1.5) vTarget = Math.min(vTarget, pointAt(path, Math.min(path.length, s + ahead), 0, this._pt).vMin);
     let reason = '';
     let hard = false;
 
@@ -848,7 +861,8 @@ class Navigator {
       this.swerveHold -= dt;
       const here = path.pts[this.index];
       const nextTurn = path.maneuvers.find((mv) => mv.s > s && (mv.turn !== 'S' || mv.uturn));
-      const turnSoon = nextTurn && nextTurn.s - s < 70;
+      // (and none in the last stretch before the drop-off)
+      const turnSoon = (nextTurn && nextTurn.s - s < 70) || path.length - s < 90;
       const lanes = here && here.edge ? here.edge.lanes.map((o) => o - here.lane).filter((o) => Math.abs(o) > 0.5) : [];
       const slowAhead = lead && !lead.ped && lead.gap < 30 && lead.speed < d.cruise * 0.55;
       // stuck behind a stopped vehicle (not a red light) for a while: go round it, oncoming lanes too when they're clear
@@ -883,11 +897,30 @@ class Navigator {
       this.offset += clamp(this.offsetTarget - this.offset, -1.2 * dt, 1.2 * dt);
     }
 
-    // 3. Steering: pure pursuit on the (offset) path, looking further ahead the faster it goes
-    const [L0, Lk] = d.lookahead;
-    const look = clamp(L0 + speed * Lk, 4, 26);
-    const target = pointAt(path, Math.min(path.length, s + look), this.offset, this._pt);
-    let steer = pursuitSteer(x, z, car.heading, v, target.x, target.z);
+    // 3. Steering, from where the car will be once its steering and yaw catch up with the wheel (controllers.js eases
+    //    both, ~0.2 s): the wheel angle the path's curvature there needs, plus corrections for the heading and for how
+    //    far the car is off its line (a Stanley controller). Pure pursuit cut tight corners and ran wide out of them.
+    const yawRate = car.angularVel || 0;
+    const tau = d.steerLag ?? STEER_LAG;
+    const mid = car.heading + yawRate * tau * 0.5;
+    const hp = car.heading + yawRate * tau;
+    const px = x + Math.sin(mid) * v * tau;
+    const pz = z + Math.cos(mid) * v * tau;
+    const sRef = Math.min(path.length, s + Math.max(0, v) * tau + (d.steerPreview ?? 1.4)); // about the front axle
+    const ref = pointAt(path, sRef, this.offset, this._pt);
+    // the curvature over the next couple of metres (an offset line turns tighter on the inside of a bend)
+    let kRef = 0;
+    const win = d.curveWindow ?? [-1.5, 0, 1.5, 3];
+    for (const ds of win) kRef += pointAt(path, clamp(sRef + ds, 0, path.length), 0, this._pk).ks;
+    kRef /= win.length;
+    kRef = kRef / Math.max(0.3, 1 + this.offset * kRef);
+    const crossErr = (px - ref.x) * -ref.tz + (pz - ref.z) * ref.tx; // right of the line
+    const headingErr = wrapAngle(Math.atan2(ref.tx, ref.tz) - hp);
+    const delta = Math.atan(WHEELBASE * kRef) + headingErr * d.steerHeading + Math.atan((d.steerCross * crossErr) / (Math.abs(v) + 1.5));
+    const target = ref;
+    const steer = clamp(delta / maxSteerAt(Math.abs(v)), -1, 1) * (v < -0.2 ? -1 : 1);
+    // still turning hard (out of a corner): no faster than the grip allows for the turn it is actually making
+    if (Math.abs(yawRate) > 0.05) vTarget = Math.min(vTarget, Math.max(speed, Math.min(d.aLat, GRIP * 0.8) / Math.abs(yawRate)));
     // far off line (just started, after a shove): aim back for it before speeding on
     const heading = Math.atan2(target.x - x, target.z - z);
     const misalign = Math.abs(wrapAngle(heading - car.heading));

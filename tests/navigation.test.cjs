@@ -310,3 +310,145 @@ test('self-driving goes round stalled cars through the clear oncoming lane after
   assert.ok(r.minGap > 0.3, `without touching them (${r.minGap.toFixed(2)} m)`);
   assert.ok(r.minX < 0, 'using the oncoming lane');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Lane keeping & car following on the car's own physics (updateCar: steering lag, yaw lag, tyre slip)
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Drives `driver` to `dest` on a grid, measuring how far the car strays from its line (the path plus the
+// autopilot's chosen offset) and how often the steering reverses on straight road
+function track(driver, dest, { dt = 1 / 60, T = 240, cars = [], each = null, start = [1.8, 20, 0], net = grid(6, 120) } = {}) {
+  const car = makeCar(...start);
+  const r = rig(net, car, { cars, buses: [], peds: [] });
+  r.navigator.setDriver(driver);
+  assert.ok(r.navigator.setDestination(dest[0], dest[1], 'x'), 'route found');
+  const stats = { maxErr: 0, straightErr: 0, reversals: 0, minGap: Infinity, t: 0 };
+  let lastSteer = 0;
+  let t = 0;
+  let minSpeed = Infinity;
+  while (t < T && !r.navigator.arrived) {
+    if (t > 5) minSpeed = Math.min(minSpeed, car.speed);
+    r.navigator.update(dt, t);
+    stepCar(car, r.keys, dt);
+    for (const v of cars) {
+      if (each) each(v, t, car, r.navigator);
+      v.x += (v.tx ?? 0) * v.speed * dt;
+      v.z += (v.tz ?? 1) * v.speed * dt;
+      const fx = Math.sin(car.heading), fz = Math.cos(car.heading);
+      const along = (v.x - car.position.x) * fx + (v.z - car.position.z) * fz;
+      const across = Math.abs((v.x - car.position.x) * fz - (v.z - car.position.z) * fx);
+      if (across < 1.8 && along > -2) stats.minGap = Math.min(stats.minGap, along - 4.5);
+    }
+    const p = r.navigator.path;
+    const loc = nav.locate(p, car.position.x, car.position.z, r.navigator.index, 40);
+    // once moving and clear of the lead-in from where the car stood
+    if (t > 2 && loc.s > 12 && r.navigator.progress < p.length - 6) {
+      const err = Math.abs(loc.across - r.navigator.offset);
+      stats.maxErr = Math.max(stats.maxErr, err);
+      // straight road: no curvature within 25 m either side
+      const quiet = p.pts.every((q) => Math.abs(q.s - loc.s) > 25 || q.k < 0.004);
+      if (quiet && Math.abs(r.navigator.offsetTarget - r.navigator.offset) < 0.05) {
+        stats.straightErr = Math.max(stats.straightErr, err);
+        const s = (r.keys.left || 0) - (r.keys.right || 0);
+        if (Math.abs(s) > 0.08) {
+          if (lastSteer && Math.sign(s) !== Math.sign(lastSteer)) stats.reversals++;
+          lastSteer = s;
+        }
+      }
+    }
+    t += dt;
+  }
+  stats.t = t;
+  stats.arrived = r.navigator.arrived;
+  stats.car = car;
+  stats.navigator = r.navigator;
+  stats.minSpeedAfter5 = minSpeed;
+  return stats;
+}
+
+test('self-driving holds its lane: through lane changes and turns, at 30, 60 and 120 fps', () => {
+  phase = 'green';
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    const s = track('self', [600, 600], { dt });
+    const fps = Math.round(1 / dt);
+    assert.ok(s.arrived, `${fps} fps: arrived`);
+    assert.ok(s.maxErr < 0.6, `${fps} fps: never more than 0.6 m off its line (${s.maxErr.toFixed(2)} m)`);
+    assert.ok(s.straightErr < 0.15, `${fps} fps: on straights within 0.15 m (${s.straightErr.toFixed(2)} m)`);
+    assert.ok(s.reversals <= 2, `${fps} fps: no weaving on straights (${s.reversals} steering reversals)`);
+  }
+});
+
+test('Crazy Taxi holds its line at speed, through its swerves and the corners', () => {
+  phase = 'green';
+  for (const dt of [1 / 30, 1 / 60]) {
+    const s = track('crazy', [600, 600], { dt });
+    assert.ok(s.arrived, 'arrived');
+    assert.ok(s.maxErr < 0.9, `within 0.9 m of its line (${s.maxErr.toFixed(2)} m)`);
+    assert.ok(s.straightErr < 0.25, `on straights within 0.25 m (${s.straightErr.toFixed(2)} m)`);
+    assert.ok(s.reversals <= 3, `no weaving (${s.reversals} reversals)`);
+  }
+});
+
+test('self-driving follows a car that brakes to a stop and pulls away, keeping its distance', () => {
+  phase = 'green';
+  const lead = slowCar(1.8, 70, 10);
+  const s = track('self', [1.8, 700], {
+    T: 40, cars: [lead],
+    each: (v, t) => { v.speed = t < 8 ? 10 : t < 11 ? Math.max(0, 10 - (t - 8) * 4) : t < 18 ? 0 : Math.min(12, (t - 18) * 2); }
+  });
+  assert.ok(s.minGap > 1.2, `never closer than 1.2 m (${s.minGap.toFixed(2)} m)`);
+  assert.ok(s.navigator.progress > 300, 'and goes on with it');
+});
+
+test('self-driving brakes for a slower car that cuts in close ahead, without hitting it', () => {
+  phase = 'green';
+  // out of sight until the taxi is up to speed, then in the next lane 14 m ahead, moving over into the taxi's
+  const lead = slowCar(5.4, -500, 4);
+  let cut = false;
+  const s = track('self', [1.8, 700], {
+    T: 25, cars: [lead],
+    each: (v, t, car) => {
+      if (!cut && t > 6) {
+        cut = true;
+        v.z = car.position.z + 14 + 4.5;
+      }
+      if (cut && v.x > 1.8) v.x = Math.max(1.8, v.x - 2 / 60);
+    }
+  });
+  assert.ok(cut, 'the cut-in happened');
+  assert.ok(s.minGap > 0.5, `no collision (${s.minGap.toFixed(2)} m)`);
+});
+
+test('self-driving follows a car along its route, round the corner, without closing in', () => {
+  phase = 'green';
+  // the lead drives the taxi's own path 25 m ahead at 8 m/s, slowing to 3 m/s round the left turn
+  const lead = slowCar(1.8, 45, 8);
+  lead.s = 25;
+  const at = {};
+  const s = track('self', [200, 120], {
+    T: 60, cars: [lead],
+    each: (v, t, car, navigator) => {
+      const p = navigator.path;
+      const q = nav.pointAt(p, Math.min(p.length, v.s), 0, at);
+      v.speed = Math.min(8, Math.max(3, q.v));
+      v.s += v.speed / 60;
+      const q2 = nav.pointAt(p, Math.min(p.length, v.s), 0, at);
+      // placed so the harness's own integration lands it on the path
+      v.tx = q2.tx; v.tz = q2.tz;
+      v.x = q2.x - v.tx * v.speed / 60;
+      v.z = q2.z - v.tz * v.speed / 60;
+    }
+  });
+  assert.ok(s.minGap > 1.5, `keeps at least 1.5 m (${s.minGap.toFixed(2)} m)`);
+  assert.ok(s.maxErr < 0.6, `in its lane while following (${s.maxErr.toFixed(2)} m)`);
+});
+
+test('self-driving keeps going past cars in the next lane and oncoming ones', () => {
+  phase = 'green';
+  // a slow car alongside in the next lane its way, and a stream of oncoming cars on the other side of the road
+  const beside = slowCar(5.4, 40, 3);
+  const oncoming = [0, 1, 2, 3, 4].map((k) => ({ ...slowCar(-1.8, 300 + k * 40, 10), tz: -1 }));
+  const s = track('self', [1.8, 700], { T: 30, cars: [beside, ...oncoming] });
+  assert.ok(s.minSpeedAfter5 > 11, `never slows for them (${s.minSpeedAfter5.toFixed(1)} m/s)`);
+  assert.ok(s.navigator.offsetTarget === 0, 'and stays in its lane');
+});
