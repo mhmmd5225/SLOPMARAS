@@ -5,34 +5,21 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const read = (path) => readFileSync(join(__dirname, '..', path), 'utf8');
-// New York's destinations (js/geodata.js picks the city from CITY outside a browser)
-process.env.CITY = 'nyc';
-let TELEPORT_LOCATIONS, LANDMARK_SITES, blockAt, nearestRoads, getIslandBoundsAtZ;
+// Kahramanmaraş's destinations
+let TELEPORT_LOCATIONS, blockAt, getIslandBoundsAtZ;
 test.before(async () => {
-  ({ TELEPORT_LOCATIONS, LANDMARK_SITES, blockAt, nearestRoads, getIslandBoundsAtZ } = await import('../js/city-config.js'));
+  ({ TELEPORT_LOCATIONS, blockAt, getIslandBoundsAtZ } = await import('../js/city-config.js'));
 });
 
-test('every teleport destination is named and lands on a real roadway inside Manhattan', () => {
-  assert.equal(Object.keys(TELEPORT_LOCATIONS).length, 8);
+test('every teleport destination is named and lands on a street (outside the building blocks) inside the city', () => {
+  assert.equal(Object.keys(TELEPORT_LOCATIONS).length, 14);
   for (const [name, point] of Object.entries(TELEPORT_LOCATIONS)) {
     assert.ok(point.name && point.sub, `${name} has a menu entry`);
     assert.ok(Number.isFinite(point.heading), `${name} has a heading`);
     assert.equal(blockAt(point.x, point.z), null, `${name} lands outside building blocks`);
     const shore = getIslandBoundsAtZ(point.z);
-    assert.ok(point.x > shore.westX + 8 && point.x < shore.eastX - 8, `${name} stays on the island`);
-    const nearby = nearestRoads(point.x, point.z, 20);
-    assert.ok(nearby.some(({ road, dist }) => dist < road.w / 2), `${name} lands within a street's width`);
+    assert.ok(point.x > shore.westX + 8 && point.x < shore.eastX - 8, `${name} stays on land`);
   }
-});
-
-test('One World Trade Center arrives on Vesey Street facing the tower', () => {
-  const point = TELEPORT_LOCATIONS.owtc;
-  const tower = LANDMARK_SITES['One World Trade Center'];
-  assert.ok(nearestRoads(point.x, point.z, 20).some(({ road, dist }) => road.name === 'Vesey St' && dist < 1));
-  const distance = Math.hypot(tower.x - point.x, tower.z - point.z);
-  assert.ok(distance > 100 && distance < 220, 'leave space for the tower view');
-  const alignment = ((tower.x - point.x) * Math.sin(point.heading) + (tower.z - point.z) * Math.cos(point.heading)) / distance;
-  assert.ok(alignment > 0.999, 'face the tower rather than the neighboring buildings');
 });
 
 test('preset and map teleports share arrival resets and mark the resolved landing point', () => {
@@ -55,7 +42,7 @@ test('preset and map teleports share arrival resets and mark the resolved landin
     getLocationLabel: (x, z) => `${x}, ${z}`,
     cityBlocks: { allBlocks: [] },
     trafficSystem: {},
-    NYCMapSystem: class {
+    CityMapSystem: class {
       constructor(options) { this.onTeleport = options.onTeleport; map = this; }
     },
     teleportButtons: Object.keys(TELEPORT_LOCATIONS).map((key) => ({

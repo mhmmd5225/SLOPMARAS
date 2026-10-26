@@ -35,8 +35,7 @@ function keyboardHarness(nyc = {}) {
       './tsl-materials.js': {},
       './actor-models.js': {},
       './pedestrians.js': {},
-      './vehicle-lights.js': {},
-      './landmarks.js': {}
+      './vehicle-lights.js': {}
     }
   });
   // Exercise the production event handlers without constructing the scene's 3D models.

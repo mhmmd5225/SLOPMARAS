@@ -1,4 +1,4 @@
-import { NYC_LANDMARKS, CITY } from './city-config.js';
+import { PLACE_LIST, CITY } from './city-config.js';
 
 // js/navigation-ui.js
 // The HUD for js/navigation.js: the Navigate menu (who drives, where to), the turn-by-turn card, the Crazy Taxi meter
@@ -43,7 +43,7 @@ function setupNavigationUI({ navigator, mapSystem, controllerManager, selectMode
 
   // Places: the city's landmarks, nearest last so the list reads as a choice of trips
   const places = $('nav-places');
-  for (const lm of NYC_LANDMARKS) {
+  for (const lm of PLACE_LIST) {
     const btn = document.createElement('button');
     btn.className = 'pop-item';
     btn.type = 'button';
@@ -70,8 +70,8 @@ function setupNavigationUI({ navigator, mapSystem, controllerManager, selectMode
   // A fare across town: a landmark 400 m - 2.5 km away (or any, if none is)
   function randomTrip() {
     const p = controllerManager.getActiveEntity().position;
-    const far = NYC_LANDMARKS.filter((l) => { const d = Math.hypot(l.x - p.x, l.z - p.z); return d > 400 && d < 2500; });
-    const list = far.length ? far : NYC_LANDMARKS;
+    const far = PLACE_LIST.filter((l) => { const d = Math.hypot(l.x - p.x, l.z - p.z); return d > 400 && d < 2500; });
+    const list = far.length ? far : PLACE_LIST;
     const lm = list[Math.floor(Math.random() * list.length)];
     if (lm) go(lm.x, lm.z, lm.name);
   }

@@ -6,7 +6,7 @@ Haritayı OpenStreetMap'ten üretiyor: 40.000'den fazla bina, gerçek yol ağı 
 
 Navigasyon (`G`) aynı yol ağı üzerinde şerit şerit rota çizer; ister kendin sür, ister taksiyi otomatik pilota (Self-driving ya da Crazy Taxi) bırak. `T` ile şoför koltuğuna geçersin.
 
-Proje, mrdoob'un [Slop New York](https://github.com/mrdoob/slop-newyork) projesinden türeyen zz85'in [Slop Singapore](https://github.com/zz85/slop-singapore) uyarlaması üzerine kuruldu. Diğer şehirler de hâlâ çalışıyor: `?city=singapore` ve `?city=nyc`.
+Proje, mrdoob'un [Slop New York](https://github.com/mrdoob/slop-newyork) projesinden türeyen zz85'in [Slop Singapore](https://github.com/zz85/slop-singapore) uyarlaması üzerine kuruldu; yalnızca Kahramanmaraş'ı içerir.
 
 ## Çalıştırma
 
@@ -37,12 +37,8 @@ node tools/city/preview.mjs kahramanmaras preview.png                 # sonucu k
 
 Ağaçlar OpenStreetMap'teki ağaçlardan, ağaç sıralarından ve parklara serpiştirilen çınarlardan oluşur (`trees.source: 'osm'`).
 
-Başka bir şehir eklemek için `tools/city/cities/<şehir>.mjs` dosyası yaz, aynı komutları o şehir için çalıştır ve sayfayı `?city=<şehir>` ile aç.
-
-Diğer şehirler ve uyarlamalar için: [Slop Cities](https://github.com/zz85/slop-cities).
-
 ## Lisans ve veri
 
 Kod [MIT Lisansı](LICENSE) ile sunuluyor.
 
-Coğrafi veri: © [OpenStreetMap katkıcıları](https://www.openstreetmap.org/copyright) (ODbL); New York'unki ayrıca NYC Open Data. Singapur'un ağaçları: [Trees.sg](https://www.nparks.gov.sg/treessg) © National Parks Board, [cheeaun/sgtreesdata](https://github.com/cheeaun/sgtreesdata) üzerinden. Üçüncü taraf veri ve bağımlılıklar kendi lisanslarını korur.
+Coğrafi veri: © [OpenStreetMap katkıcıları](https://www.openstreetmap.org/copyright) (ODbL), arazi yükseklikleri AWS Terrarium karoları. Üçüncü taraf veri ve bağımlılıklar kendi lisanslarını korur.

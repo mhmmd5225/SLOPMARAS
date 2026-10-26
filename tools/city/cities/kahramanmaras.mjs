@@ -71,7 +71,7 @@ export default {
   // (the radar's own resolution; blurred 25 m to smooth its buildings out of the ground), the region's at zoom 12 on a 100 m grid out to
   // the mountains on the horizon (region: [south, west, north, east])
   terrain: { zoom: 14, cell: 30, smooth: 25, region: [37.46, 36.77, 37.71, 37.08], regionZoom: 12, regionCell: 100, regionSmooth: 60 },
-  // Vehicle liveries (js/city-common.js NYC_VEHICLES, overridden part by part): Turkey's yellow taxis with the black
+  // Vehicle liveries (js/city-common.js DEFAULT_VEHICLES, overridden part by part): Turkey's yellow taxis with the black
   // TAKSİ lettering and Kahramanmaraş (46) plates, white with the blue TR band; the municipality's white and red buses
   vehicles: {
     taxis: [0xffc40c],
