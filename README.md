@@ -39,6 +39,8 @@ node --max-old-space-size=8192 tools/city/tiles.mjs <city>        # writes tiles
 
 New York (`?city=nyc`) has its own data build from NYC Open Data: `node --max-old-space-size=8192 tools/build-geodata.mjs`.
 
+Explore other cities and community remixes in [Slop Cities](https://github.com/zz85/slop-cities).
+
 ## License and data
 
 The project code is available under the [MIT License](LICENSE).
