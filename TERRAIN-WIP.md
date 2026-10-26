@@ -22,12 +22,12 @@ Yapılan ve test edilen (görünmez Chrome, WebGL 2):
 - Şehir yüklenip zemine oturuyor; sokakların eğimi ve helikopterden yamaca tırmanan şehir görünüyor. Konsol hatası yok.
 - Zemin katmanlarına kesimle eklenen üçgen: +2,4M; vertex'ler kaynaştırılıyor (indexed).
 
-Yapılan ama **henüz test edilmeyen** son iki düzeltme:
-1. Oyuncu taksisi görünmüyordu (düz sınırları yüzünden culling'e takılıyordu): `liftMaterials` artık yükselttiği nesnelerde `frustumCulled = false` yapıyor.
-2. Gökyüzünde/uzak dağlarda karıncalanma vardı (uzaktaki ince desen aliasing yapıyordu): `createRegionGroundMaterial` ince desenleri uzaklıkla söndürüyor.
+Sonradan test edilip doğrulananlar (görünmez Chrome, WebGL 2):
+1. Oyuncu taksisi artık görünüyor.
+2. Uzak zeminin karıncalanması bölge zemininin gölge almayı bırakmasıyla geçti (güneş gölgeleri zaten birkaç yüz metre ötesine ulaşmıyor).
 
 Yapılacaklar:
-- **Açılış süresi:** `bakeTerrain` ~10 s sürüyor. Plan:
+- **Açılış süresi:** `bakeTerrain` hâlâ ~12 s sürüyor (hızlı yollar eklendi, fark etmedi: yük asıl olarak `cutToGrid`'deki çokgen kırpmada, her parça için küçük diziler ayrılıyor). Plan:
   - Kesilmeyen üçgenleri ara bellek ayırmadan kopyalamak.
   - Vertex kaynaştırmada `Map` yerine typed-array hash tablosu kullanmak.
   - `readAttribute` için hızlı yol eklemek.

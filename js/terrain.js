@@ -512,7 +512,7 @@ function createRegionGround(material, covered, { reach = 30000, sink = 0.6 } = {
   geo.computeBoundingSphere();
   const mesh = new THREE.Mesh(geo, material);
   mesh.name = 'RegionGround';
-  mesh.receiveShadow = true;
+  mesh.receiveShadow = false; // (the sun's shadow cascades only reach a few hundred metres: beyond them it is noise)
   mesh.userData.terrainBaked = true;
   return mesh;
 }
