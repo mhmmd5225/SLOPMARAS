@@ -1,0 +1,1 @@
+[out:json][timeout:180];(node["natural"="tree"](37.556000000000004,36.896,37.602,36.964);way["natural"="tree_row"](37.556000000000004,36.896,37.602,36.964);way["leisure"~"^(park|garden)$"](37.556000000000004,36.896,37.602,36.964);way["landuse"~"^(village_green|grass)$"]["name"](37.556000000000004,36.896,37.602,36.964););out geom;

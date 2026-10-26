@@ -1,0 +1,1 @@
+[out:json][timeout:240];way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|pedestrian)(_link)?$"](37.556000000000004,36.896,37.602,36.964);out geom;

@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Slop Singapore</title>
+  <title>Slop Kahramanmaraş</title>
   <link rel="icon" href="data:," />
-  <meta name="description" content="A Singapore city simulation built with three.js: walk, drive, cycle or fly through its real streets." />
+  <meta name="description" content="A Kahramanmaraş city simulation built with three.js: walk, drive, cycle or fly through its real streets." />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <!-- three.js dev branch (builds committed to mrdoob/three.js@dev, served by jsDelivr) -->
   <script type="importmap">
@@ -19,7 +19,7 @@
     }
   </script>
   <!-- Fetch the city modules in parallel before stylesheets; the module graph controls evaluation order. -->
-  <link rel="modulepreload" href="./js/singapore-geodata.js" />
+  <link rel="modulepreload" href="./js/kahramanmaras-geodata.js" />
   <link rel="modulepreload" href="./js/geodata.js" />
   <link rel="modulepreload" href="./js/city-common.js" />
   <link rel="modulepreload" href="./js/open-city-config.js" />
@@ -34,7 +34,6 @@
   <link rel="modulepreload" href="./js/city-grid.js" />
   <link rel="modulepreload" href="./js/buildings.js" />
   <link rel="modulepreload" href="./js/open-city-buildings.js" />
-  <link rel="modulepreload" href="./js/singapore-landmarks.js" />
   <link rel="modulepreload" href="./js/city-tiles-build.js" />
   <link rel="modulepreload" href="./js/city-tiles.js" />
   <link rel="modulepreload" href="./js/fire-escapes.js" />
@@ -58,7 +57,6 @@
   <link rel="modulepreload" href="./js/audio-events.js" />
   <link rel="modulepreload" href="./js/audio-sources.js" />
   <link rel="modulepreload" href="./js/audio-acoustics.js" />
-  <link rel="modulepreload" href="./js/audio-tropics.js" />
   <link rel="modulepreload" href="./js/audio-system.js" />
   <link rel="modulepreload" href="./js/weather.js" />
   <link rel="modulepreload" href="./js/perception.js" />
@@ -115,14 +113,14 @@
   <div id="loading-overlay" role="status" aria-live="polite">
     <div class="loader">
       <span class="mta-bullet loader-bullet" aria-hidden="true">SG</span>
-      <div class="loader-title">Slop Singapore</div>
+      <div class="loader-title">Slop Kahramanmaraş</div>
       <div class="loader-track is-indeterminate" aria-hidden="true"><span id="loading-progress" class="loader-fill"></span></div>
       <div id="loading-status">Initializing WebGPURenderer &amp; TSL Shaders...</div>
     </div>
   </div>
 
   <!-- 3D WebGPU Viewport Container -->
-  <main id="canvas-container" aria-label="3D Interactive Slop Singapore Viewport"></main>
+  <main id="canvas-container" aria-label="3D Interactive Slop Kahramanmaraş Viewport"></main>
 
   <!-- Top-Left: Brand & Renderer Telemetry -->
   <header class="hud hud-top-left">
@@ -130,8 +128,8 @@
       <span class="mta-bullet" aria-hidden="true">SG</span>
       <div class="brand-titles">
         <div class="brand-heading">
-          <h1>Slop Singapore</h1>
-          <a class="repo-link" href="https://github.com/mrdoob/slop-newyork/" target="_blank" rel="noopener noreferrer" aria-label="Source on GitHub (opens in a new tab)">GitHub <span aria-hidden="true">↗</span></a>
+          <h1>Slop Kahramanmaraş</h1>
+          <a class="repo-link" href="https://github.com/mhmmd5225/SLOPMARAS/" target="_blank" rel="noopener noreferrer" aria-label="Source on GitHub (opens in a new tab)">GitHub <span aria-hidden="true">↗</span></a>
         </div>
         <div class="brand-subtitle">three.js · WebGPU · TSL · <span id="hud-fps" class="fps-ok">60</span> fps</div>
       </div>
@@ -165,7 +163,7 @@
       <button id="btn-navigate" class="tool-btn" type="button" popovertarget="navigate-popover" title="Drive to a destination [G]">
         <svg class="icon" aria-hidden="true"><use href="#i-route"/></svg><span class="tool-label">Navigate</span><kbd>G</kbd>
       </button>
-      <button id="btn-open-map" class="tool-btn" type="button" title="Full Singapore street map [M]">
+      <button id="btn-open-map" class="tool-btn" type="button" title="Full Kahramanmaraş street map [M]">
         <svg class="icon" aria-hidden="true"><use href="#i-map"/></svg><span class="tool-label">Map</span><kbd>M</kbd>
       </button>
       <span class="toolbar-divider" aria-hidden="true"></span>
@@ -221,7 +219,7 @@
   <!-- Bottom-Left: Street-Name Signs & Live GPS Radar Minimap -->
   <div class="hud hud-bottom-left">
     <div id="hud-location" class="location" aria-live="off"></div>
-    <aside id="minimap-card" class="panel radar" aria-label="Live Singapore street radar minimap" title="Open the full Singapore street map [M]">
+    <aside id="minimap-card" class="panel radar" aria-label="Live Kahramanmaraş street radar minimap" title="Open the full Kahramanmaraş street map [M]">
       <canvas id="minimap-canvas"></canvas>
       <span class="radar-north" aria-hidden="true">N</span>
       <kbd class="radar-key">M</kbd>
@@ -312,7 +310,7 @@
   </div>
 
   <!-- Full-Screen Interactive City Street Map ([M]) -->
-  <section id="fullmap-modal" class="fullmap-modal hidden" role="dialog" aria-modal="true" aria-label="Full Singapore street map (interactive)">
+  <section id="fullmap-modal" class="fullmap-modal hidden" role="dialog" aria-modal="true" aria-label="Full Kahramanmaraş street map (interactive)">
     <div id="fullmap-canvas-wrap" class="fullmap-canvas-wrap">
       <canvas id="fullmap-canvas"></canvas>
     </div>
@@ -321,7 +319,7 @@
       <div class="panel fullmap-title">
         <span class="mta-bullet" aria-hidden="true">SG</span>
         <div>
-          <h2>Singapore Street Atlas</h2>
+          <h2>Kahramanmaraş Street Atlas</h2>
           <p id="fullmap-player-info" class="fullmap-subtitle">You are at Collyer Quay</p>
         </div>
       </div>
@@ -350,7 +348,7 @@
       </div>
       <div class="panel map-zoom">
         <button id="map-center-player" class="icon-btn" type="button" title="Street view around you" aria-label="Center on player"><svg class="icon" aria-hidden="true"><use href="#i-locate"/></svg></button>
-        <button id="map-view-all" class="icon-btn" type="button" title="All of Singapore" aria-label="Fit all of Singapore"><svg class="icon" aria-hidden="true"><use href="#i-fit"/></svg></button>
+        <button id="map-view-all" class="icon-btn" type="button" title="All of Kahramanmaraş" aria-label="Fit all of Kahramanmaraş"><svg class="icon" aria-hidden="true"><use href="#i-fit"/></svg></button>
       </div>
     </div>
 

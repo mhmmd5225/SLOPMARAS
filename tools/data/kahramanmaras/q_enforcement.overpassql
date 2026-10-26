@@ -1,0 +1,1 @@
+[out:json][timeout:180];(node["highway"~"^(toll_gantry|speed_camera)$"](37.556000000000004,36.896,37.602,36.964);way["highway"="toll_gantry"](37.556000000000004,36.896,37.602,36.964);node["enforcement"](37.556000000000004,36.896,37.602,36.964);relation["type"="enforcement"](37.556000000000004,36.896,37.602,36.964););out geom;

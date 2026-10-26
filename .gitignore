@@ -1,3 +1,5 @@
 .DS_Store
 # raw island-wide Overpass downloads (tools/city/fetch-island.mjs): rebuilt into tiles/, not kept
 tools/data/*/island/
+# self-signed certificate made by serve-lan.py
+.cert/
