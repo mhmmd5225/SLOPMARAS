@@ -259,7 +259,7 @@ async function initApp() {
   // A city on its ground's heights (terrain.js): the static city is raised onto the ground once, here, before the
   // culling cuts it into cells and shadow stand-ins; what moves is raised in its vertex stage (below)
   const terrainStats = bakeTerrain(['CityGrid', 'CityBuildings', 'CityStreetDetails', 'RoadMarkings'].map((name) => scene.getObjectByName(name)).filter(Boolean));
-  if (HAS_TERRAIN) console.info(`[terrain] baked ${terrainStats.meshes} meshes (+${terrainStats.triangles} triangles cut along the ground's), ${terrainStats.instanced} instanced meshes & ${terrainStats.lights} lamps in ${terrainStats.ms} ms; ${terrainStats.heavy.join(', ')}`);
+  if (HAS_TERRAIN) console.info(`[terrain] baked ${terrainStats.meshes} meshes (+${terrainStats.triangles} triangles cut along the ground's), ${terrainStats.instanced} instanced meshes & ${terrainStats.lights} lamps in ${terrainStats.ms} ms`);
   markInit('terrain');
 
   const cullingRoots = ['ManhattanCityGrid', 'CityGrid', 'ManhattanCityBlocks', 'ManhattanStreetDetails', 'ManhattanLandmarks', 'Boroughs']

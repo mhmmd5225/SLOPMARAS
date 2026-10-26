@@ -27,11 +27,8 @@ Sonradan test edilip doğrulananlar (görünmez Chrome, WebGL 2):
 2. Uzak zeminin karıncalanması bölge zemininin gölge almayı bırakmasıyla geçti (güneş gölgeleri zaten birkaç yüz metre ötesine ulaşmıyor).
 
 Yapılacaklar:
-- **Açılış süresi:** `bakeTerrain` hâlâ ~12 s sürüyor (hızlı yollar eklendi, fark etmedi: yük asıl olarak `cutToGrid`'deki çokgen kırpmada, her parça için küçük diziler ayrılıyor). Plan:
-  - Kesilmeyen üçgenleri ara bellek ayırmadan kopyalamak.
-  - Vertex kaynaştırmada `Map` yerine typed-array hash tablosu kullanmak.
-  - `readAttribute` için hızlı yol eklemek.
-- `main.js`'deki `[terrain] baked ...` log satırı ve `terrain.js`'deki `stats.heavy` teşhis amaçlı; iş bitince sadeleştirilecek.
+- **Açılış süresi:** `bakeTerrain` 13,7 s'den ~7 s'ye indi (çokgen kırpma tahsissiz düz tamponlarla, vertex kaynaştırma açık adresli tabloyla; kırpma ~3,3 s, kaynaştırma ~2,3 s). Daha fazlası için yaklaşımı değiştirmek gerek: örn. ızgara hücresini 30 m'den büyütmek ya da yalnızca eğimli yerlerde kesmek.
+- `main.js`'deki `[terrain] baked ...` log satırı teşhis amaçlı; iş bitince kaldırılabilir.
 - Gerçek WebGPU'lu bir tarayıcıda ve telefonda performans ölçümü.
 - Kontrol edilecekler: helikopter görünümü, yokuşta araçlar, gölgelerin hizası, gece lambaları.
 - Bitince `main`'e birleştirip yayınlamak.

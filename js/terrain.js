@@ -114,21 +114,23 @@ class Grow {
   view() { return this.a.subarray(0, this.n); }
 }
 
-// Sutherland–Hodgman: the part of a convex polygon (vertices: Float32Arrays [x, y, z, ...attributes]) where f(v) >= 0,
-// f linear, its new vertices interpolated along the edges it cuts
-function clipPolygon(poly, f) {
-  const out = [];
-  for (let k = 0; k < poly.length; k++) {
-    const a = poly[k], b = poly[(k + 1) % poly.length];
-    const fa = f(a), fb = f(b);
-    if (fa >= 0) out.push(a);
-    if ((fa >= 0) !== (fb >= 0)) {
-      const t = fa / (fa - fb), v = new Float32Array(a.length);
-      for (let c = 0; c < a.length; c++) v[c] = a[c] + (b[c] - a[c]) * t;
-      out.push(v);
+// Sutherland–Hodgman on flat buffers: the part of a convex polygon (n vertices of `stride` floats, [x, y, z, ...
+// attributes], in src) where a·x + b·z + c >= 0, written to dst with its new vertices interpolated along the edges it
+// cuts. Returns the vertex count of the result (< 3: nothing left). No allocation: the buffers are reused
+function clipInto(src, n, dst, stride, a, b, c) {
+  let m = 0;
+  let pf = a * src[(n - 1) * stride] + b * src[(n - 1) * stride + 2] + c;
+  for (let k = 0, p = n - 1; k < n; p = k++) {
+    const o = k * stride, q = p * stride;
+    const f = a * src[o] + b * src[o + 2] + c;
+    if ((f >= 0) !== (pf >= 0)) {
+      const t = pf / (pf - f), d = m++ * stride;
+      for (let i = 0; i < stride; i++) dst[d + i] = src[q + i] + (src[o + i] - src[q + i]) * t;
     }
+    if (f >= 0) { const d = m++ * stride; for (let i = 0; i < stride; i++) dst[d + i] = src[o + i]; }
+    pf = f;
   }
-  return out;
+  return m;
 }
 
 // Cuts a geometry (world positions `world`) along the fine grid's lines and its cells' diagonals, every attribute
@@ -168,19 +170,8 @@ function cutToGrid(geo, world, dropUndersides) {
   const names = Object.keys(geo.attributes);
   const attrs = names.map((name) => ({ name, s: geo.attributes[name].itemSize, a: readAttribute(geo.attributes[name]), src: geo.attributes[name] }));
   const stride = 3 + attrs.reduce((n, a) => n + a.s, 0);
-  const vertexOf = (i) => {
-    const v = new Float32Array(stride);
-    v[0] = world[i * 3]; v[1] = world[i * 3 + 1]; v[2] = world[i * 3 + 2];
-    let o = 3;
-    for (const { s, a } of attrs) for (let c = 0; c < s; c++) v[o++] = a[i * s + c];
-    return v;
-  };
   const out = new Grow(triCount * 3 * stride * 2);
-  const emit = (a, b, c) => {
-    out.reserve(stride * 3);
-    out.a.set(a, out.n); out.a.set(b, out.n + stride); out.a.set(c, out.n + stride * 2);
-    out.n += stride * 3;
-  };
+  const bufs = Array.from({ length: 7 }, () => new Float32Array(stride * 24));
   // (a source vertex straight into the output)
   const copyVertex = (i) => {
     const d = out.a;
@@ -196,27 +187,58 @@ function cutToGrid(geo, world, dropUndersides) {
     for (let t = r.start / 3; t < (r.start + r.count) / 3; t++) {
       if (dropUndersides && facesDown(vtx(t, 0), vtx(t, 1), vtx(t, 2))) continue;
       if (same(t)) { out.reserve(stride * 3); copyVertex(vtx(t, 0)); copyVertex(vtx(t, 1)); copyVertex(vtx(t, 2)); continue; }
-      const tri = [vertexOf(vtx(t, 0)), vertexOf(vtx(t, 1)), vertexOf(vtx(t, 2))];
+      // the triangle into the scratch buffer: its three vertices
+      const rowA = bufs[0];
+      for (let k = 0; k < 3; k++) {
+        const i = vtx(t, k), o = k * stride;
+        rowA[o] = world[i * 3]; rowA[o + 1] = world[i * 3 + 1]; rowA[o + 2] = world[i * 3 + 2];
+        let q = o + 3;
+        for (const { s, a } of attrs) for (let c = 0; c < s; c++) rowA[q++] = a[i * s + c];
+      }
       let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-      for (const v of tri) { x0 = Math.min(x0, v[0]); x1 = Math.max(x1, v[0]); z0 = Math.min(z0, v[2]); z1 = Math.max(z1, v[2]); }
+      for (let k = 0; k < 3; k++) { const x = rowA[k * stride], z = rowA[k * stride + 2]; x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
       const i0 = Math.max(0, Math.floor((x0 - G.x0) / cell)), i1 = Math.min(G.cols - 2, Math.floor((x1 - G.x0) / cell));
       const j0 = Math.max(0, Math.floor((z0 - G.z0) / cell)), j1 = Math.min(G.rows - 2, Math.floor((z1 - G.z0) / cell));
-      if (i0 > i1 || j0 > j1) { emit(...tri); continue; } // (beyond the grid: whole)
+      if (i0 > i1 || j0 > j1) { out.reserve(stride * 3); out.a.set(rowA.subarray(0, stride * 3), out.n); out.n += stride * 3; continue; } // (beyond the grid: whole)
+      // (bufs: 0 the triangle, 1-2 a row between its z cuts, 3-4 a cell between its x cuts, 5-6 the halves)
       for (let j = j0; j <= j1; j++) {
-        const cz0 = G.z0 + j * cell, cz1 = cz0 + cell;
+        const cz0 = G.z0 + j * cell;
         // the cut lines at the grid's outer edges reach past it, so nothing there falls between two cells
-        const zLo = j === 0 ? -Infinity : cz0, zHi = j === G.rows - 2 ? Infinity : cz1;
-        let row = clipPolygon(clipPolygon(tri, (v) => v[2] - zLo), (v) => zHi - v[2]);
-        if (row.length < 3) continue;
+        let n = 3, src = bufs[0], dst = bufs[1];
+        if (j > 0) { n = clipInto(src, n, dst, stride, 0, 1, -cz0); src = dst; dst = bufs[2]; }
+        if (n >= 3 && j < G.rows - 2) { n = clipInto(src, n, dst, stride, 0, -1, cz0 + cell); src = dst; }
+        if (n < 3) continue;
+        const row = src, rowN = n;
+        let rx0 = Infinity, rx1 = -Infinity;
+        for (let k = 0; k < rowN; k++) { const x = row[k * stride]; if (x < rx0) rx0 = x; if (x > rx1) rx1 = x; }
         for (let i = i0; i <= i1; i++) {
-          const cx0 = G.x0 + i * cell, cx1 = cx0 + cell;
-          const xLo = i === 0 ? -Infinity : cx0, xHi = i === G.cols - 2 ? Infinity : cx1;
-          const box = clipPolygon(clipPolygon(row, (v) => v[0] - xLo), (v) => xHi - v[0]);
-          if (box.length < 3) continue;
-          // the cell's diagonal: u + v = 1 in the cell's own (u, v)
-          const diag = (v) => 1 - (v[0] - cx0) / cell - (v[2] - cz0) / cell;
-          for (const half of [clipPolygon(box, diag), clipPolygon(box, (v) => -diag(v))]) {
-            for (let k = 1; k + 1 < half.length; k++) emit(half[0], half[k], half[k + 1]);
+          const cx0 = G.x0 + i * cell;
+          let m = rowN, s2 = row, d2 = bufs[3];
+          if (i > 0 && rx0 < cx0) { m = clipInto(s2, m, d2, stride, 1, 0, -cx0); s2 = d2; d2 = bufs[4]; }
+          if (m >= 3 && i < G.cols - 2 && rx1 > cx0 + cell) { m = clipInto(s2, m, d2, stride, -1, 0, cx0 + cell); s2 = d2; }
+          if (m < 3) continue;
+          // the cell's diagonal: u + v = 1 in the cell's own (u, v); f > 0 on the lower-left half. A polygon wholly on
+          // one side is kept as it is
+          const dc = 1 + cx0 / cell + cz0 / cell;
+          let lo = false, hi = false;
+          for (let k = 0; k < m; k++) {
+            const f = dc - (s2[k * stride] + s2[k * stride + 2]) / cell;
+            if (f > 1e-6) lo = true; else if (f < -1e-6) hi = true;
+          }
+          for (let side = 0; side < 2; side++) {
+            if (side === 0 ? !lo && hi : !hi && lo) continue; // (nothing on this side)
+            let h, hb;
+            if (side === 0 ? !hi : !lo) { h = m; hb = s2; } // (all of it is on this side)
+            else { const sg = side === 0 ? 1 : -1; h = clipInto(s2, m, bufs[5], stride, -sg / cell, -sg / cell, sg * dc); hb = bufs[5]; }
+            if (h < 3) continue;
+            out.reserve(stride * 3 * (h - 2));
+            const d = out.a;
+            for (let k = 1; k + 1 < h; k++) {
+              d.set(hb.subarray(0, stride), out.n);
+              d.set(hb.subarray(k * stride, (k + 1) * stride), out.n + stride);
+              d.set(hb.subarray((k + 1) * stride, (k + 2) * stride), out.n + stride * 2);
+              out.n += stride * 3;
+            }
           }
         }
       }
@@ -226,26 +248,30 @@ function cutToGrid(geo, world, dropUndersides) {
   // Back to attributes, the pieces' vertices welded (the same position & attributes, to 1 mm / 1e-4: one vertex,
   // indexed), which keeps the cut ground's memory near its triangle count rather than three vertices each
   const n = out.n / stride, data = out.a;
-  const Q = (c, v) => Math.round(c < 3 ? v * 1000 : v * 10000);
+  // (positions to 1 mm, the rest to 1e-4: quantised once per vertex into `key`, kept for each unique one)
   let size = 1;
   while (size < n * 2) size <<= 1;
+  const mask = size - 1;
   const table = new Int32Array(size).fill(-1); // open addressing: slot -> unique vertex
   const unique = new Grow(n * stride * 0.5);
+  let ukeys = new Int32Array(Math.max(64, n * stride * 0.5));
   const indices = new Uint32Array(n);
   const key = new Int32Array(stride);
   let count = 0;
   for (let k = 0; k < n; k++) {
     const o = k * stride;
     let h = 0x811c9dc5;
-    for (let c = 0; c < stride; c++) { key[c] = Q(c, data[o + c]); h = Math.imul(h ^ key[c], 16777619); }
-    let slot = (h >>> 0) & (size - 1), found = -1;
+    for (let c = 0; c < 3; c++) { const q = Math.round(data[o + c] * 1000); key[c] = q; h = Math.imul(h ^ q, 16777619); }
+    for (let c = 3; c < stride; c++) { const q = Math.round(data[o + c] * 10000); key[c] = q; h = Math.imul(h ^ q, 16777619); }
+    let slot = (h ^ (h >>> 15)) & mask, found = -1;
     for (;;) {
       const u = table[slot];
       if (u < 0) break;
-      let eq = true;
-      for (let c = 0; c < stride && eq; c++) eq = Q(c, unique.a[u * stride + c]) === key[c];
-      if (eq) { found = u; break; }
-      slot = (slot + 1) & (size - 1);
+      const uo = u * stride;
+      let c = 0;
+      while (c < stride && ukeys[uo + c] === key[c]) c++;
+      if (c === stride) { found = u; break; }
+      slot = (slot + 1) & mask;
     }
     if (found < 0) {
       found = count++;
@@ -253,6 +279,8 @@ function cutToGrid(geo, world, dropUndersides) {
       unique.reserve(stride);
       unique.a.set(data.subarray(o, o + stride), unique.n);
       unique.n += stride;
+      if (unique.n > ukeys.length) { const g = new Int32Array(ukeys.length * 2); g.set(ukeys); ukeys = g; }
+      ukeys.set(key, found * stride);
     }
     indices[k] = found;
   }
@@ -357,8 +385,7 @@ function liftObject(o, fresh = true) {
  * (userData.terrainBaked) so liftMaterials() leaves it be. Returns what it did
  */
 function bakeTerrain(roots) {
-  const stats = { meshes: 0, instanced: 0, lights: 0, triangles: 0, ms: 0, heavy: [] };
-  const triangles = (g) => (g.index ? g.index.count : g.attributes.position.count) / 3;
+  const stats = { meshes: 0, instanced: 0, lights: 0, triangles: 0, ms: 0 };
   if (!T) return stats;
   const t0 = performance.now();
   const shared = new Map();
@@ -374,11 +401,8 @@ function bakeTerrain(roots) {
         bakeInstances(o);
         stats.instanced++;
       } else if (o.isMesh || o.isLine || o.isPoints) {
-        const before = triangles(o.geometry);
-        const added = bakeMesh(o, shared);
-        stats.triangles += added;
+        stats.triangles += bakeMesh(o, shared);
         stats.meshes++;
-        if (added > 100000) stats.heavy.push(`${o.material?.name || o.material?.type}#${o.material?.color?.getHexString?.()} ${before}->${before + added} tris/${o.geometry.attributes.position.count} verts`);
       } else return;
       o.userData.terrainBaked = true;
     });
