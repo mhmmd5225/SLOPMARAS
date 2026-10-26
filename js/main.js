@@ -8,6 +8,8 @@ import { buildCityGrid } from './city-grid.js';
 import { buildLandmarks } from './landmarks.js';
 import { buildCityBlocks } from './buildings.js';
 import { buildOpenCityBuildings } from './open-city-buildings.js';
+import { buildSingaporeLandmarks } from './singapore-landmarks.js';
+import { CityTiles } from './city-tiles.js';
 import { buildStreetDetails } from './street-details.js';
 import { buildOpenCityDetails } from './open-city-details.js';
 import { createTrafficSystem, createHighwayTraffic } from './traffic.js';
@@ -20,6 +22,7 @@ import { LightingSystem } from './lighting.js';
 import { NYCMapSystem } from './nyc-map.js';
 import { setupSceneCulling, updateSceneCulling } from './scene-culling.js';
 import { CityAudioSystem } from './audio-system.js';
+import { Weather } from './weather.js';
 
 // js/main.js
 // Main entry point for the city simulation (Singapore by default, ?city=nyc for New York) in Three.js WebGPURenderer &
@@ -121,7 +124,15 @@ async function initApp() {
   // (a city built from OpenStreetMap with its buildings mapped stands them as mapped; else they're generated on the lots)
   const cityBlocks = (CITY.open && buildOpenCityBuildings(scene)) || buildCityBlocks(scene);
   markInit('blocks');
-  const allColliders = [...landmarkColliders, ...cityBlocks.colliders, ...boroughs.colliders, ...(cityGrid.colliders || [])];
+  // Singapore's modelled landmarks (Marina Bay Sands, the Flyer) stand where their mapped outlines were left out
+  const cityLandmarks = CITY.open && CITY.id === 'singapore' ? buildSingaporeLandmarks(scene) : null;
+  if (cityLandmarks && cityBlocks.allBlocks[0]) cityBlocks.allBlocks[0].footprints.push(...cityLandmarks.footprints);
+  markInit('cityLandmarks');
+  // The rest of the island (tools/city/tiles.mjs), streamed in tiles of buildings & main roads around the camera
+  const cityTiles = CITY.open ? new CityTiles(scene, { url: `./tiles/${CITY.id}/` }) : null;
+  if (cityTiles && !(await cityTiles.init())) cityTiles.index = null;
+  markInit('islandTiles');
+  const allColliders = [...landmarkColliders, ...(cityLandmarks?.colliders || []), ...cityBlocks.colliders, ...boroughs.colliders, ...(cityGrid.colliders || [])];
 
   const streetDetails = CITY.open ? buildOpenCityDetails(scene) : buildStreetDetails(scene);
   markInit('streetDetails');
@@ -182,8 +193,11 @@ async function initApp() {
   const cameraSystem = new CameraSystem(renderer.domElement, controllerManager);
   const touchControls = new TouchControls(controllerManager);
   const soundButton = document.getElementById('btn-sound');
+  // A tropical city (Singapore) has its koels, cicadas and thunderstorms
+  const tropical = CITY.open && CITY.id === 'singapore';
   const audioSystem = new CityAudioSystem({ controllerManager, trafficSystem, highwayTraffic, streetDetails }, {
-    onStateChange: updateSoundButton
+    onStateChange: updateSoundButton,
+    tropics: tropical
   });
   function updateSoundButton() {
     if (!soundButton) return;
@@ -194,6 +208,19 @@ async function initApp() {
     soundButton.querySelector('use').setAttribute('href', audioSystem.enabled ? '#i-sound' : '#i-sound-off');
   }
   soundButton?.addEventListener('click', () => audioSystem.setEnabled(!audioSystem.enabled));
+  // Thunderstorms (js/weather.js): the storm button & [R]; each lightning flash's thunder follows at the speed of sound
+  const weather = tropical ? new Weather(scene, lightingSystem, { onLightning: (distance) => audioSystem.thunder(distance) }) : null;
+  const stormButton = document.getElementById('btn-storm');
+  if (stormButton && !weather) stormButton.remove();
+  function toggleStorm(immediate = false) {
+    if (!weather) return;
+    const on = !weather.stormy;
+    weather.setStorm(on, immediate);
+    stormButton?.setAttribute('aria-pressed', String(on));
+    stormButton?.classList.toggle('active', on);
+  }
+  stormButton?.addEventListener('click', () => toggleStorm());
+  if (weather && new URLSearchParams(location.search).has('storm')) toggleStorm(true);
   // (a city built from OpenStreetMap: its gantries & cameras learn the junctions' signals and get the in-car chimes)
   if (streetDetails.attach) streetDetails.attach(trafficSystem.network, audioSystem);
   updateSoundButton();
@@ -616,6 +643,9 @@ async function initApp() {
       case 'KeyH':
         if (hudToggleBtn) hudToggleBtn.click();
         break;
+      case 'KeyR':
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) toggleStorm();
+        break;
       case 'KeyN':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) audioSystem.setEnabled(!audioSystem.enabled);
         break;
@@ -727,6 +757,9 @@ async function initApp() {
     for (const o of culled) o.frustumCulled = true;
   }
 
+  // For poking at from the console (and the browser checks): the simulation's main systems
+  globalThis.slop = { scene, controllerManager, cameraSystem, lightingSystem, audioSystem, cityTiles, cityLandmarks, weather };
+
   await precompileShaders();
   markInit('compile');
 
@@ -765,11 +798,15 @@ async function initApp() {
       nextPlayerSave = now + 5000;
     }
     if (boroughs.update) boroughs.update(elapsed); // Roosevelt Island Tramway cabins
+    if (cityLandmarks) cityLandmarks.update(elapsed, lightingSystem.activePresetId === 'midnight' || lightingSystem.activePresetId === 'twilight');
     cityBlocks.update(cameraSystem.currentPos.x, cameraSystem.currentPos.z);
     if (cityBlocks.updateLights) cityBlocks.updateLights(cameraSystem.camera);
     if (streetDetails.update) streetDetails.update(cameraSystem.camera, controllerManager.getActiveEntity());
     lightingSystem.update(cameraSystem.currentPos);
     mapSystem.update();
+    if (weather) weather.update(dt, cameraSystem.camera);
+    if (cityTiles) cityTiles.update(cameraSystem.camera);
+    audioSystem.setAmbience(lightingSystem.activePresetId, weather ? weather.storm : 0);
     audioSystem.update(dt, elapsed, cameraSystem.camera, lightingSystem.activePresetId === 'midnight');
     if (warmedUp) updateSceneCulling(cameraSystem.camera.position); // the warm-up frame draws every chunk
 

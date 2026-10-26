@@ -108,7 +108,8 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
       square(61, 160, -40 + 200, 0, { building: 'yes' }), // degenerate: dropped
       square(62, -150, -150, 15, { building: 'yes', height: '20' }),
       square(63, -150, -150, 8, { 'building:part': 'yes', height: '50' }),
-      square(64, -60, -220, 6, { building: 'roof' })
+      square(64, -60, -220, 6, { building: 'roof' }),
+      square(65, 150, -60, 12, { building: 'hotel', height: '193' }) // a landmark modelled by hand: left out
     ]);
     // An ERP gantry on North Road, a speed camera by East Street, a red light camera on North Road's southern approach
     const node = (id, [lon, lat], tags) => ({ type: 'node', id, lon, lat, tags });
@@ -123,7 +124,8 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
     const city = {
       id: 'testcity', name: 'Test City', origin: { lat: LAT0, lon: LON0, label: 'the crossing' }, bearing: 'auto',
       detail: [LAT0 - 0.0032, LON0 - 0.0032, LAT0 + 0.0032, LON0 + 0.0032], margin: 0.001, sidewalk: 5, strip: 6, driveSide: 'left',
-      trees: { credit: 'test', shapes: { 'Fabaceae (Leguminosae)': 'locust' } }
+      trees: { credit: 'test', shapes: { 'Fabaceae (Leguminosae)': 'locust' } },
+      landmarks: [{ id: 'tower', name: 'Test Tower', hide: [65] }]
     };
     const out = path.join(dir, 'testcity-geodata.js');
     await buildCity(city, { out, data: dir });
@@ -172,6 +174,7 @@ test('a city builds from OSM layers: land, blocks with lots, parks, the road gra
       built.push(b);
     }
     assert.equal(built.length, 3, JSON.stringify(built.map((b) => [b.type, b.top])));
+    assert.ok(!built.some((b) => b.top === 193), 'the modelled landmark is left out');
     const at = (x, z) => built.find((b) => b.pts.every(([px, pz]) => Math.abs(px - x) < 17 && Math.abs(pz - z) < 17));
     assert.equal(at(160, 160).top, 32, 'ten storeys of 3.2 m');
     assert.equal(at(-150, -150).top, 50, 'the part stands for its outline');

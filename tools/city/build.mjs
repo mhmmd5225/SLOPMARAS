@@ -210,9 +210,18 @@ export async function buildCity(cityOrId, { out, data } = {}) {
       return (BY_STYLE[style] || 4) + (area > 2500 ? 2 : 0);
     };
     const els = JSON.parse(fs.readFileSync(path.join(dir, 'osm_buildings.json'), 'utf8')).elements;
+    // the outlines of the landmarks the city models by hand (config.landmarks: way ids)
+    const hidden = new Set((city.landmarks || []).flatMap((l) => l.hide || []));
+    let hiddenCount = 0;
     const items = [];
     for (const e of els) {
       const t = e.tags || {};
+      if (e.type === 'way' && hidden.has(e.id)) {
+        // (no trees where the modelled landmark stands either)
+        if (!(num(t.min_height) > 0)) for (const { outer } of areaPolygons(e, toWorld, 8)) groundFootprints.push(outer);
+        hiddenCount++;
+        continue;
+      }
       const part = !t.building && !!t['building:part'];
       if (t.building === 'no' || t['building:part'] === 'no') continue;
       for (const { outer, holes } of areaPolygons(e, toWorld, 8)) {
@@ -272,7 +281,7 @@ export async function buildCity(cityOrId, { out, data } = {}) {
       if (b.bottom < 3) groundFootprints.push(b.outer);
     }
     buildings = { types, data };
-    log(`${kept.length} buildings & parts (${items.length - kept.length} outlines drawn by their parts; ${kept.filter((b) => b.top > 60).length} over 60 m)`);
+    log(`${kept.length} buildings & parts (${items.length - kept.length} outlines drawn by their parts; ${kept.filter((b) => b.top > 60).length} over 60 m; ${hiddenCount} left to the modelled landmarks)`);
   }
 
   // --- Trees (where the config names an inventory: tools/city/fetch.mjs) ------------------------------------------------

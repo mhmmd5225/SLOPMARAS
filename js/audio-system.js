@@ -2,6 +2,7 @@ import { createSynthResources, createMotorVoice, setControlRate } from './audio-
 import { createEventResources, playEvent, createWindVoice } from './audio-events.js';
 import { CityAudioSources } from './audio-sources.js';
 import { CityAcoustics } from './audio-acoustics.js';
+import { createTropicalAmbience } from './audio-tropics.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const smooth = (param, value, now, time = 0.035, immediate = false) => {
@@ -85,7 +86,10 @@ class SpatialEmitter {
 }
 
 class CityAudioSystem {
-  constructor(simulation, { onStateChange = () => {} } = {}) {
+  // `tropics`: the city's koels, cicadas & thunderstorms (js/audio-tropics.js)
+  constructor(simulation, { onStateChange = () => {}, tropics = false } = {}) {
+    this.tropicsEnabled = tropics;
+    this.ambience = { time: 'golden', storm: 0 };
     this.sources = new CityAudioSources(simulation);
     this.acoustics = new CityAcoustics(simulation.controllerManager);
     this.onStateChange = onStateChange;
@@ -179,6 +183,7 @@ class CityAudioSystem {
     this.reflectionFilter.Q.value = 0.5;
     this.reflections.connect(this.reverb).connect(this.reflectionFilter).connect(this.mix);
     this.wind = createWindVoice(context, this.resources, this.mix);
+    this.tropics = this.tropicsEnabled ? createTropicalAmbience(context, this.mix) : null;
     context.onstatechange = () => this.onStateChange();
   }
 
@@ -409,6 +414,18 @@ class CityAudioSystem {
     }
   }
 
+  // The time of day (a js/lighting.js preset id) and how stormy it is (0..1), for the ambience
+  setAmbience(time, storm = 0) {
+    this.ambience.time = time;
+    this.ambience.storm = storm;
+  }
+
+  // Thunder from a lightning flash `distance` m away (arrives distance / 343 s later)
+  thunder(distance) {
+    if (!this.ready || !this.enabled || this.context?.state !== 'running' || document.hidden) return;
+    this.tropics?.thunder(distance);
+  }
+
   update(dt, elapsed, camera, night = false) {
     if (!this.ready || !this.enabled || this.context?.state !== 'running' || document.hidden) return;
     this.accumulator += dt;
@@ -513,6 +530,7 @@ class CityAudioSystem {
     }
     Object.assign(this.windParams, { speed: Math.min(sources.motion, 50), altitude: position.y, traffic: sources.traffic, night: night ? 1 : 0, enclosure });
     this.wind.update(this.windParams, now);
+    this.tropics?.update({ time: this.ambience.time, storm: this.ambience.storm, altitude: position.y, enclosure, traffic: sources.traffic }, now);
   }
 
   dispose() {
@@ -523,6 +541,7 @@ class CityAudioSystem {
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.reset();
     this.wind?.dispose(true);
+    this.tropics?.dispose(true);
     for (const node of [this.mix, this.compressor, this.master, this.reflections, this.reverb, this.reflectionFilter]) node?.disconnect();
     if (this.context) {
       this.context.onstatechange = null;

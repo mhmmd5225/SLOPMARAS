@@ -62,6 +62,10 @@ function driveSpeed(speed, throttle, boost, dt, drive) {
   return Math.sign(throttle) * Math.min(Math.max(limit, coasting), coasting + Math.abs(throttle) * acceleration * dt);
 }
 
+// How far beyond the city's land the helicopter may fly (m): a city built from OpenStreetMap streams the rest of its
+// island in tiles (js/city-tiles.js), tens of kilometres across
+const HELI_RANGE = CITY?.open ? 30000 : 6000;
+
 // Walking surface for the player's pedestrian (its rig samples it around its feet)
 const personGround = (controllers, x, z) => controllers.getGroundHeight(x, z, 'person');
 
@@ -385,7 +389,7 @@ class ThirdPersonControllerManager {
     const sinH = Math.sin(heading), cosH = Math.cos(heading);
     const shape = collisionBody(this.activeMode, radius, heading, 0.1);
     const reach = Math.max(shape.extX, shape.extZ);
-    const margin = heli ? 6000 : 0;
+    const margin = heli ? HELI_RANGE : 0;
     const entity = this.getActiveEntity();
     // Conservative body cylinders, including the taxi's corners, bicycle wheels and helicopter tail/rotor.
     const body = { person: [0.48, 1.9], car: [2.4, 1.9], cyclist: [1.0, 1.9], helicopter: [6.2, 3.2] };
@@ -396,7 +400,7 @@ class ThirdPersonControllerManager {
     const cameraBack = Math.cos(0.09) * entity.chaseDistance;
     const cameraUp = entity.chaseHeight + Math.sin(0.09) * entity.chaseDistance * 0.85;
     const clampPoint = (px, pz) => {
-      pz = Math.max(ISLAND_BOUNDS.minZ + (heli ? -6000 : 30), Math.min(ISLAND_BOUNDS.maxZ + margin, pz));
+      pz = Math.max(ISLAND_BOUNDS.minZ + (heli ? -HELI_RANGE : 30), Math.min(ISLAND_BOUNDS.maxZ + margin, pz));
       px = Math.max(ISLAND_BOUNDS.minX - margin, Math.min(ISLAND_BOUNDS.maxX + margin, px));
       if (!heli && getIslandBoundsAtZ) {
         const shore = getIslandBoundsAtZ(pz);
@@ -903,9 +907,9 @@ class ThirdPersonControllerManager {
   resolveHorizontalCollision(pos, radius, carEntity = null, entity = carEntity) {
     // The detailed island (the helicopter may roam out over the harbour & the boroughs)
     const heli = this.activeMode === 'helicopter';
-    const m = heli ? 6000 : 0;
+    const m = heli ? HELI_RANGE : 0;
     pos.x = Math.max(ISLAND_BOUNDS.minX - m, Math.min(ISLAND_BOUNDS.maxX + m, pos.x));
-    pos.z = Math.max(ISLAND_BOUNDS.minZ + (heli ? -6000 : 30), Math.min(ISLAND_BOUNDS.maxZ + m, pos.z));
+    pos.z = Math.max(ISLAND_BOUNDS.minZ + (heli ? -HELI_RANGE : 30), Math.min(ISLAND_BOUNDS.maxZ + m, pos.z));
     if (this.activeMode !== 'helicopter' && getIslandBoundsAtZ) {
       const shore = getIslandBoundsAtZ(pos.z);
       const minShoreX = shore.westX + 8.0;

@@ -71,6 +71,19 @@ export default {
     bus: { body: 0x48a83a, stripe: 0x2e7d2a, ribbon: 0xcfe9c3, skirt: 0x1c2026, route: '36', routeBadge: '#1c1c1c', destination: 'CHANGI AIRPORT' },
     labels: { car: 'Taxi', cyclist: 'Cyclist' }
   },
+  // Landmarks modelled by hand (js/singapore-landmarks.js) instead of standing as their OpenStreetMap outlines: the
+  // buildings and parts they replace (way ids) are left out of GEO.buildings
+  landmarks: [
+    // the three hotel towers and the SkyPark (the podium, lobbies & Shoppes stand as mapped)
+    { id: 'mbs', name: 'Marina Bay Sands', hide: [116800998, 116801004, 172307472, 172307471] },
+    // the wheel, mapped as 29 slices of building:part and a footprint on the ground (the terminal stands as mapped)
+    { id: 'flyer', name: 'Singapore Flyer', hide: [230082125, 492119925, 492119928, 492119930, 492119932, 492119933, 492119935, 492119937,
+      492119939, 492119940, 492119942, 492119944, 492119946, 492119948, 492119949, 492119951, 492119953, 492119954, 492119956,
+      492119958, 492119959, 492119961, 492119963, 492119964, 492119966, 492119968, 492119969, 492119971, 492119973, 492119974] }
+  ],
+  // The rest of the island beyond the detail box, streamed in tiles of buildings & main roads around the player
+  // (tools/city/fetch-island.mjs, tools/city/tiles.mjs, js/city-tiles.js): [south, west, north, east]
+  island: { box: [1.20, 103.59, 1.475, 104.09], fetchCell: 0.055, tile: 1500 },
   // Map labels: 0 regions, 1 waters, 2 neighbourhoods (the districts above are labelled too)
   labels: [
     { name: 'MARINA BAY', at: [1.2860, 103.8575], kind: 1 },
