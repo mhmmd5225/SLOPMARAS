@@ -5,6 +5,13 @@ const test = require('node:test');
 const { loadModule } = require('./helpers/module.cjs');
 
 const source = readFileSync(join(__dirname, '../js/controllers.js'), 'utf8');
+// The ground under the controllers (terrain.js): flat unless a test gives it heights, z rising ahead at `rise` per metre
+const ground = { rise: 0 };
+const terrain = {
+  HAS_TERRAIN: true,
+  heightAt: (x, z) => ground.rise * z,
+  slopeAt: () => [0, ground.rise]
+};
 
 function eventTarget() {
   const listeners = new Map();
@@ -35,7 +42,8 @@ function keyboardHarness(nyc = {}) {
       './tsl-materials.js': {},
       './actor-models.js': {},
       './pedestrians.js': {},
-      './vehicle-lights.js': {}
+      './vehicle-lights.js': {},
+      './terrain.js': terrain
     }
   });
   // Exercise the production event handlers without constructing the scene's 3D models.
@@ -707,4 +715,102 @@ test('island tiles\' colliders come and go with their tiles', () => {
   ent.position.x = 1495;
   controller.resolveHorizontalCollision(ent.position, 0.48);
   assert.equal(ent.position.x, 1495);
+});
+
+// On a slope: z rises ahead at `rise` per metre (the car, the walker and the helicopter all head +z)
+function onSlope(rise, body) {
+  ground.rise = rise;
+  try { return body(); } finally { ground.rise = 0; }
+}
+
+test('a climb slows the car and caps its speed lower; a descent speeds it up without throttle', () => {
+  const flat = carDynamicsHarness();
+  flat.controller.keys.forward = true;
+  flat.advance(8);
+  const climb = onSlope(0.1, () => {
+    const h = carDynamicsHarness();
+    h.controller.keys.forward = true;
+    h.advance(8);
+    const at8 = h.car.speed;
+    h.advance(30);
+    return { at8, top: h.car.speed };
+  });
+  assert.ok(climb.at8 < flat.car.speed - 3, `slower up a 10% climb (${climb.at8.toFixed(1)} vs ${flat.car.speed.toFixed(1)} m/s)`);
+  assert.ok(climb.top < 30 && climb.top > 15, `a lower top speed up the climb (${climb.top.toFixed(1)} m/s)`);
+  const descent = onSlope(-0.1, () => {
+    const h = carDynamicsHarness({ speed: 10 });
+    h.advance(5);
+    return h.car.speed;
+  });
+  assert.ok(descent > 10, `coasting down a 10% slope gathers speed (${descent.toFixed(1)} m/s)`);
+});
+
+test('a car at rest on a hill stays put without throttle', () => {
+  for (const rise of [0.15, -0.15]) {
+    const car = onSlope(rise, () => {
+      const h = carDynamicsHarness();
+      h.advance(5);
+      return h.car;
+    });
+    assert.equal(car.speed, 0);
+    assert.equal(car.position.z, 0);
+  }
+});
+
+test('the bicycle climbs slower and freewheels downhill', () => {
+  const ride = (rise, throttle, speed = 0) => onSlope(rise, () => {
+    const b = advanceWithTouch('Cyclist', 0, false);
+    Object.assign(b, { speed, position: { x: 0, y: 0, z: 0 }, heading: 0 });
+    const { controller } = keyboardHarness();
+    controller.entities = { cyclist: b };
+    controller.getGroundHeight = () => 0;
+    controller.resolveHorizontalCollision = () => {};
+    controller.keys.forward = throttle;
+    for (let i = 0; i < 600; i++) controller.updateCyclist(1 / 60);
+    return b.speed;
+  });
+  const flat = ride(0, true), climb = ride(0.08, true);
+  assert.ok(climb < flat * 0.7, `slower up an 8% climb (${climb.toFixed(1)} vs ${flat.toFixed(1)} m/s)`);
+  assert.ok(ride(-0.08, false, 5) > 5, 'freewheeling down an 8% slope gathers speed');
+  assert.equal(ride(0.005, false), 0, 'a bicycle at rest stays put on a gentle slope');
+});
+
+test('the walker slows up a steep slope', () => {
+  const walk = (rise) => onSlope(rise, () => {
+    const { controller } = keyboardHarness();
+    const p = { position: { x: 0, y: 0, z: 0 }, heading: 0, speed: 0, verticalVel: 0 };
+    controller.entities = { person: p };
+    controller.getGroundHeight = () => 0;
+    controller.resolveHorizontalCollision = () => {};
+    controller.keys.forward = true;
+    for (let i = 0; i < 300; i++) controller.updatePerson(1 / 60);
+    return p.speed;
+  });
+  const flat = walk(0), steep = walk(0.2);
+  assert.ok(steep > flat * 0.4 && steep < flat * 0.6, `about half the pace up a 20% slope (${steep.toFixed(2)} vs ${flat.toFixed(2)} m/s)`);
+});
+
+test('the helicopter keeps its altitude over rising ground and hits the slope', () => {
+  const flight = (rise) => onSlope(rise, () => {
+    const { controller } = keyboardHarness();
+    const h = {
+      position: { x: 0, y: 30, z: 0 }, heading: 0, speed: 40, verticalSpeed: 0, pitchAngle: 0, rollAngle: 0,
+      tiltPivot: { rotation: { x: 0, z: 0 }, position: { y: 0 } }
+    };
+    const hits = [];
+    controller.entities = { helicopter: h };
+    controller.resolveHorizontalCollision = () => {};
+    controller.reportCollision = (...args) => hits.push(args);
+    controller.keys.forward = true;
+    const heights = [];
+    for (let i = 0; i < 120; i++) { controller.updateHelicopter(1 / 30, i / 30); heights.push(h.position.y); }
+    return { h, hits, heights };
+  });
+  const flat = flight(0);
+  assert.equal(flat.hits.length, 0);
+  assert.ok(Math.abs(flat.h.position.y - 30) < 1e-9, 'level flight over flat ground keeps its height');
+  const hill = flight(0.2);
+  assert.ok(hill.heights[30] < 30 - 5, 'the ground rising ahead closes on it');
+  assert.ok(hill.hits.length > 0, 'it hits the slope');
+  assert.ok(hill.heights.every((y) => y >= 0.25));
 });

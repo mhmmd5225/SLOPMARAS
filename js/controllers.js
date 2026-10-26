@@ -22,6 +22,7 @@ import {
 } from './actor-models.js';
 import { PersonCrowd, PersonRig } from './pedestrians.js';
 import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './vehicle-lights.js';
+import { HAS_TERRAIN, heightAt, slopeAt } from './terrain.js';
 
 // js/controllers.js
 // Sculpted, non-blocky GTA 6-style 3D models, animations, and physics controllers
@@ -45,6 +46,15 @@ const BICYCLE_DRIVE = {
   speed: 19, reverseSpeed: 4.5, acceleration: 9,
   rolling: 0.08, drag: 0.004, coast: 0.2, brake: 7.5 // Backward input is scaled to 0.6, giving 4.5 m/s² braking.
 };
+
+// The ground under a city with its heights (terrain.js) pulls along a slope: g along the grade (rise over run)
+const GRAVITY = 9.81;
+const gravityAlong = (grade) => (-GRAVITY * grade) / Math.sqrt(1 + grade * grade);
+// Walking speed on a slope, as a share of the flat's (Tobler's hiking function: fastest slightly downhill, ~half on a
+// 20% climb)
+const walkingPace = (grade) => Math.min(1, Math.exp(-3.5 * Math.abs(grade + 0.05)) / Math.exp(-3.5 * 0.05));
+// A rider's sustained power climbs a slope at a fraction of the flat's top speed
+const BICYCLE_CLIMB = 8;
 
 function driveSpeed(speed, throttle, dt, drive) {
   // Turning can project tiny sideways motion back into speed after braking to zero.
@@ -368,6 +378,14 @@ class ThirdPersonControllerManager {
     return this.entities[this.activeMode];
   }
 
+  // The ground's grade (rise over run) heading `heading` at (x, z): across 15 m each way, so a 30 m cell's facets read as
+  // the street's slope. 0 without terrain
+  gradeAt(x, z, heading) {
+    if (!HAS_TERRAIN) return 0;
+    const [gx, gz] = slopeAt(x, z, 15);
+    return gx * Math.sin(heading) + gz * Math.cos(heading);
+  }
+
   teleportActiveTo(x, z, heading = Math.PI, savedAltitude = null) {
     const ent = this.getActiveEntity();
     this.resetInput();
@@ -402,6 +420,7 @@ class ThirdPersonControllerManager {
       ent.leanAngle = ent.leanPivot.rotation.z = 0;
     } else if (heli) {
       ent.verticalSpeed = ent.pitchAngle = ent.rollAngle = 0;
+      ent.absY = ent.position.y + heightAt(ent.position.x, ent.position.z);
       ent.tiltPivot.rotation.x = ent.tiltPivot.rotation.z = 0;
       ent.tiltPivot.position.y = 0;
     }
@@ -1159,6 +1178,8 @@ class ThirdPersonControllerManager {
     let targetSpeed = 0;
     if (this.keys.forward) targetSpeed = maxSpeed * this.keys.forward;
     else if (this.keys.backward) targetSpeed = -maxSpeed * 0.65 * this.keys.backward;
+    // slower up a slope (and down a steep one), whichever way the walker faces
+    targetSpeed *= walkingPace(this.gradeAt(p.position.x, p.position.z, p.heading) * Math.sign(targetSpeed || 1));
 
     if (this.keys.left) p.heading += turnRate * dt * this.keys.left;
     if (this.keys.right) p.heading -= turnRate * dt * this.keys.right;
@@ -1204,6 +1225,8 @@ class ThirdPersonControllerManager {
     // Short steps keep grip, impacts and suspension consistent at different display rates.
     const steps = Math.ceil(dt * 120);
     const step = dt / steps;
+    // The slope's pull along the car's heading (the ground barely turns within a frame)
+    const pull = gravityAlong(this.gradeAt(c.position.x, c.position.z, c.heading));
     const steerResponse = 1 - Math.exp(-10 * step);
     const yawResponse = 1 - Math.exp(-5 * step);
     const tireResponse = 1 - Math.exp(-4 * step);
@@ -1212,7 +1235,9 @@ class ThirdPersonControllerManager {
       const vx = sin * c.speed + c.vx, vz = cos * c.speed + c.vz;
       const forward = vx * sin + vz * cos;
       const sideways = vx * cos - vz * sin;
-      const speed = driveSpeed(forward, throttle, step, CAR_DRIVE);
+      // At rest without throttle the brakes hold it on a hill
+      const held = !throttle && Math.abs(forward) < 0.3;
+      const speed = driveSpeed(forward, throttle, step, CAR_DRIVE) + (held ? 0 : pull * step);
       const acceleration = (speed - forward) / step;
       // Braking and cornering share tire grip; air resistance does not use it.
       const tireAcceleration = acceleration + CAR_DRIVE.drag * forward * Math.abs(forward);
@@ -1279,7 +1304,10 @@ class ThirdPersonControllerManager {
     if (this.keys.forward) throttle = this.keys.forward;
     else if (this.keys.backward) throttle = -0.6 * this.keys.backward;
 
-    b.speed = driveSpeed(b.speed, throttle, dt, BICYCLE_DRIVE);
+    const grade = this.gradeAt(b.position.x, b.position.z, b.heading);
+    const climb = BICYCLE_DRIVE.speed / (1 + BICYCLE_CLIMB * Math.max(0, grade));
+    b.speed = driveSpeed(b.speed, throttle, dt, { ...BICYCLE_DRIVE, speed: climb }) + gravityAlong(grade) * dt;
+    if (!throttle && Math.abs(b.speed) < 0.05 && Math.abs(grade) < BICYCLE_DRIVE.rolling / GRAVITY) b.speed = 0;
 
     let turnInput = 0;
     if (this.keys.left) turnInput = this.keys.left;
@@ -1343,14 +1371,20 @@ class ThirdPersonControllerManager {
 
     h.heading += yawInput * 1.45 * dt;
 
+    // It flies at its altitude (absY: above the origin's ground) whatever the ground under it does: a slope rising ahead
+    // comes up to meet it. position.y stays its height above the ground, as everything drawn is lifted by the ground's
+    if (!Number.isFinite(h.absY)) h.absY = h.position.y + heightAt(h.position.x, h.position.z);
     h.position.x += Math.sin(h.heading) * h.speed * dt;
     h.position.z += Math.cos(h.heading) * h.speed * dt;
-    h.position.y += h.verticalSpeed * dt;
+    h.absY += h.verticalSpeed * dt;
+    const ground = heightAt(h.position.x, h.position.z);
+    h.position.y = h.absY - ground;
 
     if (h.position.y < 0.25) {
       this.reportCollision(h, groundCollider, 'ground', h.position.x, 0.25, h.position.z, 0, 1, 0, -h.verticalSpeed);
     }
     h.position.y = Math.max(0.25, Math.min(380, h.position.y));
+    h.absY = h.position.y + ground;
     this.resolveHorizontalCollision(h.position, 4.5, null, h);
 
     const targetPitch = (h.speed / maxHorizSpeed) * 0.24;
