@@ -1,5 +1,7 @@
 .DS_Store
 # raw island-wide Overpass downloads (tools/city/fetch-island.mjs): rebuilt into tiles/, not kept
 tools/data/*/island/
+# Copernicus GLO-30 tiles (tools/city/terrain.mjs, ~40 MB each): baked into js/<city>-geodata.js, not kept
+tools/data/*/copdem/
 # self-signed certificate made by serve-lan.py
 .cert/

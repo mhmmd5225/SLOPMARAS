@@ -37,8 +37,10 @@ node tools/city/preview.mjs kahramanmaras preview.png                 # sonucu k
 
 Ağaçlar OpenStreetMap'teki ağaçlardan, ağaç sıralarından ve parklara serpiştirilen çınarlardan oluşur (`trees.source: 'osm'`).
 
+Arazi yükseklikleri Copernicus GLO-30 yükseklik modelinden gelir (yaklaşık 30 m çözünürlük; `fetch.mjs` gereken 1°'lik karoları `tools/data/kahramanmaras/copdem/` klasörüne indirir, bu klasör depoya girmez). Model binaları ve ağaçları da içerdiği için şehir altında OpenStreetMap'teki bina ayak izleri kesilip zemin çevresinden doldurulur. Ayarlar şehir dosyasındaki `terrain` alanındadır.
+
 ## Lisans ve veri
 
 Kod [MIT Lisansı](LICENSE) ile sunuluyor.
 
-Coğrafi veri: © [OpenStreetMap katkıcıları](https://www.openstreetmap.org/copyright) (ODbL), arazi yükseklikleri AWS Terrarium karoları. Üçüncü taraf veri ve bağımlılıklar kendi lisanslarını korur.
+Coğrafi veri: © [OpenStreetMap katkıcıları](https://www.openstreetmap.org/copyright) (ODbL), arazi yükseklikleri Copernicus WorldDEM-30 © DLR e.V. 2010–2014 ve © Airbus Defence and Space GmbH 2014–2018, Avrupa Birliği ve ESA'nın COPERNICUS programı kapsamında sağlanmıştır. Üçüncü taraf veri ve bağımlılıklar kendi lisanslarını korur.
